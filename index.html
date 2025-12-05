@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>PDF → Schedule (ICS) — Upload & export</title>
+<style>
+  body {font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:18px; max-width:920px; margin:auto;}
+  h1 {font-size:1.2rem; margin-bottom:6px;}
+  label {display:block; margin-top:10px; font-weight:600;}
+  input[type=text], input[type=file] {width:100%; padding:8px; box-sizing:border-box;}
+  button {margin-top:12px; padding:10px 16px; font-size:1rem; cursor:pointer;}
+  pre {background:#f6f6f6; padding:10px; overflow:auto;}
+  .events {margin-top:12px;}
+  .event {border:1px solid #ddd; padding:8px; margin-bottom:6px; border-radius:6px;}
+  .small{font-size:0.9rem;color:#555}
+</style>
+</head>
+<body>
+  <h1>PDF → Week schedule → ICS (GitHub Pages demo)</h1>
+  <p class="small">Upload the PDF (the one you provided). Enter First + Last name exactly (or approximate). The app will try to find the person's row and the legend codes on the pages, then produce an .ics you can import in Google Calendar. The legend parser expects lines like code-list then time-list (as in your file).  [oai_citation:4‡Orario settimanale per dipendente_dic_ven_5_2025.pdf](sediment://file_000000009978720abae5ef8156fefe9f)</p>
+
+  <label>PDF file (choose)</label>
+  <input id="pdfFile" type="file" accept="application/pdf" />
+
+  <label>First name</label>
+  <input id="firstName" type="text" placeholder="e.g. Marco" />
+
+  <label>Last name</label>
+  <input id="lastName" type="text" placeholder="e.g. Natali" />
+
+  <button id="process">Parse PDF and Build Calendar</button>
+
+  <div id="status" class="small" style="margin-top:12px"></div>
+
+  <div id="output"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
+
+<script>
+/*
+  Minimal static app:
+  - Extracts text from PDF pages using pdf.js
+  - Parses legend blocks: (codes...) (times...) -> create mapping code->time
+  - Finds week range header (dd/mm/yyyy dd/mm/yyyy) to get monday date
+  - Finds person line "LASTNAME, FIRSTNAME" and tokens after it -> codes per day
+  - Builds events and an ICS file for download
+  - Shows per-event "Add to Google Calendar" link
+*/
+
+/* Helpers */
+function setStatus(s){ document.getElementById('status').innerText = s; }
+function download(filename, text){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], {type:'text/calendar;charset=utf-8'}));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* Parse a date string dd/mm/yyyy -> Date at midnight local */
+function parseDDMMYYYY(s){
+  const [d,m,y] = s.split('/').map(Number);
+  return new Date(y, m-1, d);
+}
+
+/* Add minutes to Date */
+function addMinutes(d, min){ return new Date(d.getTime() + min*60000); }
+
+/* Format Date to ICS datetime (UTC) */
+function toICSDateUTC(d){
+  const Y = d.getUTCFullYear().toString().padStart(4,'0');
+  const M = (d.getUTCMonth()+1).toString().padStart(2,'0');
+  const D = d.getUTCDate().toString().padStart(2,'0');
+  const hh = d.getUTCHours().toString().padStart(2,'0');
+  const mm = d.getUTCMinutes().toString().padStart(2,'0');
+  const ss = d.getUTCSeconds().toString().padStart(2,'0');
+  return `${Y}${M}${D}T${hh}${mm}${ss}Z`;
+}
+
+/* Make Google Calendar event-add URL for single event (quick add is limited to single event) */
+function gcalAddUrl(title, startDate, endDate, desc){
+  // format: https://www.google.com/calendar/render?action=TEMPLATE&text=Title&dates=YYYYMMDDThhmmssZ/YYYYMMDDThhmmssZ&details=Desc
+  const s = encodeURIComponent(title);
+  const d1 = toICSDateUTC(startDate);
+  const d2 = toICSDateUTC(endDate);
+  const de = encodeURIComponent(desc || '');
+  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
+}
+
+/* Generate an .ics file (simple, no alarms) */
+function buildICS(events){
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//PDF→Schedule Export//github-pages-demo',
+  ];
+  events.forEach((ev,i) => {
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:${Date.now()}-${i}@pdf-schedule`);
+    lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`);
+    lines.push(`DTSTART:${toICSDateUTC(ev.start)}`);
+    lines.push(`DTEND:${toICSDateUTC(ev.end)}`);
+    lines.push(`SUMMARY:${ev.title}`);
+    if(ev.desc) lines.push(`DESCRIPTION:${ev.desc.replace(/\n/g,'\\n')}`);
+    if(ev.location) lines.push(`LOCATION:${ev.location}`);
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n');
+}
+
+/* Attempt to extract text from PDF using pdf.js */
+async function extractTextFromPDF(arrayBuffer){
+  const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
+  const pdf = await loadingTask.promise;
+  let fullText = '';
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    // try textContent
+    const content = await page.getTextContent();
+    const pageText = content.items.map(i => i.str).join(' ');
+    fullText += '\n\n' + pageText;
+  }
+  return fullText;
+}
+
+/* If pdf.js yields little text, fallback to OCR using Tesseract */
+async function ocrArrayBuffer(arrayBuffer){
+  setStatus('Running OCR fallback (Tesseract) — may take time on big PDFs...');
+  const blob = new Blob([arrayBuffer], {type: 'application/pdf'});
+  // Tesseract cannot directly read PDF — but many pages are images inside PDF; in static demo we won't implement full PDF -> images
+  // For this demo, we attempt pdf.js extraction only. If no text, we inform the user to try better-quality PDF.
+  setStatus('OCR fallback not fully supported in this static demo. If text extraction fails, please upload a text-based PDF or provide clearer scans.');
+  return '';
+}
+
+/* Parse legend lines: lines containing code tokens followed by time tokens.
+   Example snippet encountered in your PDF:
+   "01 05 1M 2E 2Q 3Z 6E05:45-14:20 05:55-14:30 09:30-18:05 11:25-20:00 14:00-22:35 07:30-16:05 05:30-13:05"
+   The parser: find sequences where there's a group of tokens (codes) then a sequence of time ranges.
+*/
+function parseLegendFromText(allText){
+  const legends = {}; // code -> {startStr,endStr}
+  // Normalize spacing
+  const norm = allText.replace(/\r\n/g,'\n').replace(/\t/g,' ');
+  const lines = norm.split('\n').map(l => l.trim()).filter(Boolean);
+
+  // We'll look for lines containing multiple time patterns like "hh:mm-hh:mm"
+  const timeRegexGlobal = /([0-2]?\d:[0-5]\d-[0-2]?\d:[0-5]\d)/g;
+
+  lines.forEach(line=>{
+    const times = [...line.matchAll(timeRegexGlobal)].map(m=>m[1]);
+    if(times.length >= 1){
+      // Extract words before the first time — treat as code tokens (split by spaces, punctuation)
+      const idx = line.search(timeRegexGlobal);
+      if(idx>0){
+        let codePart = line.slice(0, idx).trim();
+        // codePart may contain punctuation; split on spaces and quotes
+        const codeTokens = codePart.split(/[\s,;]+/).map(s=>s.replace(/['"]/g,'').trim()).filter(Boolean);
+        // sometimes the code tokens list length matches times length (very likely)
+        if(codeTokens.length >= 1){
+          // If times count equals codeTokens length, map accordingly.
+          if(codeTokens.length === times.length){
+            for(let i=0;i<codeTokens.length;i++){
+              legends[codeTokens[i]] = times[i];
+            }
+          } else {
+            // Heuristic: codes appear, then times (weekly 7 times may follow). We'll map first N codes to first N times if possible.
+            // But better: if there are exactly 7 times, they are Mon..Sun. Then map codes sequentially to those 7 times (if codes count equals 7).
+            if(times.length === 7 && codeTokens.length>0){
+              // Map each code token (if codeTokens length == 7) else try sliding: often many codes (like "01 05 1M 2E 2Q 3Z 6E") correspond to 7 times.
+              for(let i=0;i<codeTokens.length;i++){
+                if(i < 7) legends[codeTokens[i]] = times[i];
+              }
+            } else {
+              // fallback: map first min(len) pairs
+              const L = Math.min(codeTokens.length, times.length);
+              for(let i=0;i<L;i++) legends[codeTokens[i]] = times[i];
+            }
+          }
+        }
+      }
+    }
+  });
+  return legends;
+}
+
+/* Given a person token list (codes), and mapping code->time, create events for each day of week starting from startDate */
+function buildEventsFromCodesForWeek(startDate, codeTokensFor7Days, codeMap, personName){
+  const events = [];
+  // ensure length 7 by filling missing with null
+  const codes = Array.from({length:7}, (_,i)=> codeTokensFor7Days[i] || null);
+  for(let i=0;i<7;i++){
+    const code = codes[i];
+    if(!code) continue;
+    const t = codeMap[code] || codeMap[code.replace(/['"]/g,'')] || null;
+    if(!t) continue;
+    // t format "HH:MM-HH:MM"
+    const [s,e] = t.split('-');
+    if(!s || !e) continue;
+    const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+    // parse hours/minutes
+    const [sh, sm] = s.split(':').map(Number);
+    const [eh, em] = e.split(':').map(Number);
+    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sh, sm);
+    let end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), eh, em);
+    // if end <= start, assume next day
+    if(end <= start) end = addMinutes(end, 24*60);
+    events.push({
+      title: `${personName} — ${code}`,
+      start, end,
+      desc: `Shift code: ${code}`
+    });
+  }
+  return events;
+}
+
+/* Try to find the person line and extract codes for 7 days:
+   Approach:
+    - find the occurrence of "LASTNAME, FIRSTNAME" (case-insensitive)
+    - take the rest of the tokens until newline; many records appear as "LASTNAME, FIRSTNAME 'CODE' 'CODE' ..." where codes correspond to days
+    - if the tokens include numbers like 95,96 or OB4, ignore tokens that are purely numeric or known markers like OB-, 95,96,AFP1 etc.
+    - pick tokens that match any code from legend map; we will keep token order and map as Mon→Sun.
+*/
+function extractCodeSequenceForPerson(allText, last, first, knownCodes){
+  const norm = allText.replace(/\r\n/g,'\n');
+  const search = `${last}, ${first}`.toUpperCase();
+  const up = norm.toUpperCase();
+  const idx = up.indexOf(search);
+  if(idx === -1){
+    // try search without comma
+    const alt = `${last} ${first}`.toUpperCase();
+    const idx2 = up.indexOf(alt);
+    if(idx2 === -1) return null;
+    return extractTokensAfterIndex(up, idx2+alt.length, knownCodes);
+  }
+  return extractTokensAfterIndex(up, idx+search.length, knownCodes);
+}
+
+function extractTokensAfterIndex(textUpper, startIdx, knownCodes){
+  // take the remainder of the same line (until newline)
+  const rest = textUpper.slice(startIdx, startIdx + 400); // limit
+  // split on whitespace and punctuation
+  const tokens = rest.split(/[\s]+/).map(t => t.replace(/[^\w\-\+']/g,'').trim()).filter(Boolean);
+  // filter tokens that look like legend codes (present in knownCodes) or are short (1-3 chars) and contain letters/numbers
+  const candidate = tokens.filter(t => knownCodes.has(t) || /^[A-Z0-9'*\+]{1,4}$/.test(t));
+  // Now try to pick first up to 7 tokens that map to codes set; if we have >7 we pick first 7 matching knownCodes
+  const out = [];
+  for(let t of candidate){
+    if(out.length>=7) break;
+    // if token is known code directly, accept
+    if(knownCodes.has(t)){
+      out.push(t);
+      continue;
+    }
+    // sometimes tokens like "SE'VI'" include quotes; try to extract inner code parts like VI or SE'VI'
+    const cleaned = t.replace(/^'+|'+$/g,'');
+    if(knownCodes.has(cleaned)) { out.push(cleaned); continue; }
+    // else if token contains a known code as substring, pick the substring
+    for(let kc of knownCodes){
+      if(t.includes(kc) && out.length<7){
+        out.push(kc);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/* Main handler */
+document.getElementById('process').addEventListener('click', async ()=>{
+  const f = document.getElementById('pdfFile').files[0];
+  const first = (document.getElementById('firstName').value || '').trim();
+  const last = (document.getElementById('lastName').value || '').trim();
+  if(!f) { alert('Please choose a PDF file.'); return; }
+  if(!first || !last) { alert('Please enter first and last name.'); return; }
+
+  setStatus('Reading PDF...');
+  const ab = await f.arrayBuffer();
+  let text = '';
+  try{
+    text = await extractTextFromPDF(ab);
+  }catch(e){
+    console.error(e);
+    text = '';
+  }
+  if(!text || text.trim().length < 50){
+    // fallback: notify user
+    text = await ocrArrayBuffer(ab);
+  }
+
+  if(!text || text.trim().length < 10){
+    setStatus('Failed to extract text from this PDF. Try uploading a text-based PDF (not images) or provide clearer scans.');
+    return;
+  }
+
+  setStatus('Parsing legend and header...');
+  // find week range dd/mm/yyyy dd/mm/yyyy
+  const headerMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
+  let weekStartDate = null;
+  if(headerMatch){
+    weekStartDate = parseDDMMYYYY(headerMatch[1]);
+  } else {
+    // fallback: ask user? Instead pick today as start (but we must not ask). We'll abort gracefully.
+    setStatus('Could not find week header date in PDF. The app expects a header like "08/12/2025 14/12/2025". Please confirm the PDF has that header.'); 
+    return;
+  }
+
+  // parse legends
+  const codeMap = parseLegendFromText(text);
+  const knownCodesSet = new Set(Object.keys(codeMap).map(k => k.toUpperCase()));
+
+  if(Object.keys(codeMap).length === 0){
+    setStatus('Could not detect legend code→time mappings. The app expects lines with codes followed by time ranges (HH:MM-HH:MM). See the PDF legend.'); 
+    return;
+  }
+
+  setStatus('Looking for person row and extracting codes...');
+  // Use uppercase names (PDF is uppercase)
+  const codesSeq = extractCodeSequenceForPerson(text, last.toUpperCase(), first.toUpperCase(), knownCodesSet);
+  if(!codesSeq || codesSeq.length === 0){
+    setStatus('Could not find the person row or no shift codes detected for that person. Try variations: enter EXACT last name and first name as in PDF (uppercase, with comma).');
+    return;
+  }
+
+  // Build events
+  const events = buildEventsFromCodesForWeek(weekStartDate, codesSeq, Object.fromEntries(Object.entries(codeMap).map(([k,v])=>[k.toUpperCase(), v])), `${first} ${last}`);
+  if(events.length === 0){
+    setStatus('Found person and codes, but no valid time mapping for those codes (legend mapping missing).');
+    return;
+  }
+
+  // Show results and build ICS
+  setStatus('Building ICS...');
+  const ics = buildICS(events);
+  const out = document.getElementById('output');
+  out.innerHTML = '';
+  const dlBtn = document.createElement('button');
+  dlBtn.textContent = 'Download .ics (import to Google Calendar / Outlook)';
+  dlBtn.onclick = ()=> download(`${last}_${first}_schedule.ics`, ics);
+  out.appendChild(dlBtn);
+
+  const list = document.createElement('div');
+  list.className = 'events';
+  events.forEach((ev,i)=>{
+    const div = document.createElement('div');
+    div.className = 'event';
+    const s = ev.start.toLocaleString();
+    const e = ev.end.toLocaleString();
+    div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>
+                     <div style="margin-top:6px;">
+                       <a target="_blank" href="${gcalAddUrl(ev.title, ev.start, ev.end, ev.desc)}">Add this event in Google Calendar (single)</a>
+                     </div>`;
+    list.appendChild(div);
+  });
+  out.appendChild(list);
+  setStatus(`Done — ${events.length} events built for ${first} ${last}. You can download the .ics or add events individually to Google Calendar.`);
+});
+</script>
+</body>
+</html>
