@@ -3,53 +3,69 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PDF → Schedule (ICS) — Upload & export</title>
+<title>PDF → Schedule → ICS (Studio + OB auto) </title>
 <style>
-  body {font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:18px; max-width:920px; margin:auto;}
-  h1 {font-size:1.2rem; margin-bottom:6px;}
+  body {font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial; padding:18px; max-width:980px; margin:auto;}
+  h1 {font-size:1.15rem; margin-bottom:6px;}
   label {display:block; margin-top:10px; font-weight:600;}
-  input[type=text], input[type=file] {width:100%; padding:8px; box-sizing:border-box;}
+  input[type=text], input[type=file], select {width:100%; padding:8px; box-sizing:border-box;}
   button {margin-top:12px; padding:10px 16px; font-size:1rem; cursor:pointer;}
-  pre {background:#f6f6f6; padding:10px; overflow:auto;}
-  .events {margin-top:12px;}
-  .event {border:1px solid #ddd; padding:8px; margin-bottom:6px; border-radius:6px;}
   .small{font-size:0.9rem;color:#555}
+  table{width:100%; border-collapse:collapse; margin-top:10px;}
+  th, td {border:1px solid #ddd; padding:6px; text-align:left;}
+  th {background:#f3f3f3;}
+  .events{margin-top:12px;}
+  .event{border:1px solid #ddd; padding:8px; margin-bottom:6px; border-radius:6px;}
+  .legend-area {margin-top:12px;}
+  .inline {display:flex; gap:8px;}
+  .inline > * {flex:1;}
 </style>
 </head>
 <body>
-  <h1>PDF → Week schedule → ICS (GitHub Pages demo)</h1>
-  <p class="small">Upload the PDF (the one you provided). Enter First + Last name exactly (or approximate). The app will try to find the person's row and the legend codes on the pages, then produce an .ics you can import in Google Calendar. The legend parser expects lines like code-list then time-list (as in your file).  [oai_citation:4‡Orario settimanale per dipendente_dic_ven_5_2025.pdf](sediment://file_000000009978720abae5ef8156fefe9f)</p>
+  <h1>PDF → Schedule (Studio mapping + per-day OB)</h1>
+  <p class="small">Upload your PDF, enter First + Last name, click Parse. The app reads the LEGEND blocks, infers code→time mappings, detects the person's weekly row and per-day shift codes, studios and OB vans (OB1/OB2/...). Edit legend times if needed, then Confirm to build the .ics. Event title: <code>CODE — Studio Name — OBx</code>.</p>
 
-  <label>PDF file (choose)</label>
+  <label>PDF file</label>
   <input id="pdfFile" type="file" accept="application/pdf" />
 
-  <label>First name</label>
-  <input id="firstName" type="text" placeholder="e.g. Marco" />
+  <div class="inline">
+    <div>
+      <label>First name</label>
+      <input id="firstName" type="text" placeholder="Marco" />
+    </div>
+    <div>
+      <label>Last name</label>
+      <input id="lastName" type="text" placeholder="Natali" />
+    </div>
+  </div>
 
-  <label>Last name</label>
-  <input id="lastName" type="text" placeholder="e.g. Natali" />
-
-  <button id="process">Parse PDF and Build Calendar</button>
+  <div style="margin-top:10px;">
+    <button id="parseBtn">Parse PDF (extract legend & find person)</button>
+    <button id="buildBtn" disabled>Confirm Legend & Build Calendar</button>
+  </div>
 
   <div id="status" class="small" style="margin-top:12px"></div>
+
+  <div id="legendContainer" class="legend-area"></div>
 
   <div id="output"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.1.1/dist/tesseract.min.js"></script>
 
 <script>
-/*
-  Minimal static app:
-  - Extracts text from PDF pages using pdf.js
-  - Parses legend blocks: (codes...) (times...) -> create mapping code->time
-  - Finds week range header (dd/mm/yyyy dd/mm/yyyy) to get monday date
-  - Finds person line "LASTNAME, FIRSTNAME" and tokens after it -> codes per day
-  - Builds events and an ICS file for download
-  - Shows per-event "Add to Google Calendar" link
-*/
+/* =========================
+   Studio mapping (hard-coded)
+   ========================= */
+const STUDIO_MAP = {
+  'N1':'Nomentano 1','N2':'Nomentano 2','N3':'Nomentano 3','N4':'Nomentano 4','N5':'Nomentano 5','N6':'Nomentano 6',
+  'AFP1':'Foro Italico',
+  '1':'Teulada 1','2':'Teulada 2','3':'Teulada 3','4':'Teulada 4','5':'Teulada 5',
+  'SR1':'Saxa Rubra 1','SR2':'Saxa Rubra 2','SR3':'Saxa Rubra 3','SR4':'Saxa Rubra 4','SR5':'Saxa Rubra 5',
+  'RAN':'Saxa Rubra (Rai News)',
+  'AUM':'Montecitorio','DISP':'Disposizione','TDV':'Teatro delle Vittorie','TdV':'Teatro delle Vittorie','SE':'Servizio Esterno'
+};
 
-/* Helpers */
+/* Utilities */
 function setStatus(s){ document.getElementById('status').innerText = s; }
 function download(filename, text){
   const a = document.createElement('a');
@@ -58,17 +74,6 @@ function download(filename, text){
   a.click();
   URL.revokeObjectURL(a.href);
 }
-
-/* Parse a date string dd/mm/yyyy -> Date at midnight local */
-function parseDDMMYYYY(s){
-  const [d,m,y] = s.split('/').map(Number);
-  return new Date(y, m-1, d);
-}
-
-/* Add minutes to Date */
-function addMinutes(d, min){ return new Date(d.getTime() + min*60000); }
-
-/* Format Date to ICS datetime (UTC) */
 function toICSDateUTC(d){
   const Y = d.getUTCFullYear().toString().padStart(4,'0');
   const M = (d.getUTCMonth()+1).toString().padStart(2,'0');
@@ -78,23 +83,213 @@ function toICSDateUTC(d){
   const ss = d.getUTCSeconds().toString().padStart(2,'0');
   return `${Y}${M}${D}T${hh}${mm}${ss}Z`;
 }
-
-/* Make Google Calendar event-add URL for single event (quick add is limited to single event) */
 function gcalAddUrl(title, startDate, endDate, desc){
-  // format: https://www.google.com/calendar/render?action=TEMPLATE&text=Title&dates=YYYYMMDDThhmmssZ/YYYYMMDDThhmmssZ&details=Desc
   const s = encodeURIComponent(title);
   const d1 = toICSDateUTC(startDate);
   const d2 = toICSDateUTC(endDate);
   const de = encodeURIComponent(desc || '');
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
 }
+function addMinutes(d, min){ return new Date(d.getTime() + min*60000); }
+function parseDDMMYYYY(s){ const [d,m,y] = s.split('/').map(Number); return new Date(y, m-1, d); }
 
-/* Generate an .ics file (simple, no alarms) */
+/* PDF extraction */
+async function extractTextFromPDF(arrayBuffer){
+  const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
+  const pdf = await loadingTask.promise;
+  let pages = [];
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(i => i.str).join(' ');
+    pages.push(pageText);
+  }
+  return pages;
+}
+
+/* Find LEGEND blocks per page (search for "LEGENDA" case-insensitive and extract following text) */
+function extractLegendsFromPages(pagesTextArray){
+  const legends = []; // [{pageIndex, blockText}]
+  pagesTextArray.forEach((pageText, idx) => {
+    const up = pageText.toUpperCase();
+    const pos = up.indexOf('LEGENDA');
+    if(pos !== -1){
+      const chunk = pageText.slice(pos, pos + 700);
+      legends.push({page: idx+1, text: chunk});
+    }
+  });
+  return legends;
+}
+
+/* Parse legend chunk into code->time mapping */
+function parseLegendChunk(chunk){
+  const timeRegexGlobal = /([0-2]?\d:[0-5]\d-[0-2]?\d:[0-5]\d)/g;
+  const times = [...chunk.matchAll(timeRegexGlobal)].map(m=>m[1]);
+  const firstTimeMatch = chunk.search(timeRegexGlobal);
+  let codes = [];
+  if(firstTimeMatch !== -1){
+    const before = chunk.slice(0, firstTimeMatch);
+    codes = before.split(/[\s,;:()]+/).map(s=>s.trim()).filter(Boolean).filter(t => /^[A-Z0-9'°\-]{1,6}$/i.test(t));
+  } else {
+    codes = chunk.split(/[\s,;:()]+/).map(s=>s.trim()).filter(Boolean).filter(t => /^[A-Z0-9'°\-]{1,6}$/i.test(t));
+  }
+  const bad = new Set(['LEGENDA','ORARIO','DAL','AL','SETTIMANA','GIORNI','TRASF','STATO']);
+  codes = codes.map(c => c.replace(/['"]/g,'')).filter(c => !bad.has(c.toUpperCase())).map(c => c.toUpperCase());
+  const map = {};
+  if(codes.length > 0 && times.length > 0){
+    if(codes.length === times.length){
+      for(let i=0;i<codes.length;i++) map[codes[i]] = times[i];
+    } else if(times.length === 7){
+      for(let i=0;i<Math.min(7, codes.length); i++) map[codes[i]] = times[i];
+    } else {
+      const L = Math.min(codes.length, times.length);
+      for(let i=0;i<L;i++) map[codes[i]] = times[i];
+    }
+  }
+  return {map, codes, times};
+}
+
+/* find week start date */
+function detectWeekStartFromPages(pages){
+  for(const text of pages){
+    const m = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
+    if(m) return parseDDMMYYYY(m[1]);
+  }
+  return null;
+}
+
+/* Extract tokens after name and derive per-day objects:
+   - For each of 7 days: find shift code (must be in knownShiftCodes if possible),
+     then find studio token (if token in STUDIO_MAP), and OB token /^OB\d+$/.
+   Heuristic: scan tokens sequentially, for each day pick first shift-like token,
+   then check next tokens for studio and OB. */
+function extractPerDayFromPersonRow(pagesTextArray, last, first, knownShiftCodes){
+  const searchForms = [
+    `${last}, ${first}`,
+    `${last} ${first}`,
+    `${first} ${last}`
+  ].map(s=>s.toUpperCase());
+
+  for(const pageText of pagesTextArray){
+    const up = pageText.toUpperCase();
+    let idx = -1;
+    for(const s of searchForms){
+      idx = up.indexOf(s);
+      if(idx !== -1) break;
+    }
+    if(idx === -1) continue;
+
+    // take a chunk after the name (next 500 chars)
+    const rest = up.slice(idx, idx + 800);
+    // split tokens (preserve OB tokens, N3, alpha-numeric codes)
+    const tokens = rest.split(/[\s]+/).map(t => t.replace(/[^\w\-\+']/g,'').trim()).filter(Boolean);
+
+    // find index of name token inside tokens
+    let nameIdx = tokens.findIndex(tok => tok.includes(last.toUpperCase()) || tok.includes(first.toUpperCase()));
+    if(nameIdx === -1) nameIdx = 0;
+    const after = tokens.slice(nameIdx + 1, nameIdx + 60).map(t=>t.replace(/'+/g,'').trim()).filter(Boolean);
+
+    // Now build 7 day objects
+    const days = [];
+    let cursor = 0;
+    for(let day=0; day<7; day++){
+      let shift = null, studio = null, ob = null;
+      // search up to next 6 tokens for a shift code
+      while(cursor < after.length && shift === null){
+        const tok = after[cursor].toUpperCase();
+        // OB token (like OB1) should not be treated as shift
+        if(/^OB\d+$/i.test(tok)){
+          // attach this OB to previous day if exists and no shift yet for previous? skip now
+          // store and move on
+          cursor++; continue;
+        }
+        // studio token like N3 could appear; we consider studios later if shift found
+        // if tok is in knownShiftCodes treat as shift
+        if(knownShiftCodes.has(tok)){
+          shift = tok; cursor++;
+          break;
+        }
+        // otherwise if token looks like typical code (letters/numbers), accept it as shift fallback
+        if(/^[A-Z0-9]{1,4}$/.test(tok)){
+          shift = tok; cursor++;
+          break;
+        }
+        cursor++;
+      }
+      // after shift found, peek next tokens to find studio and OB (within next 4 tokens)
+      for(let look=0; look<4 && (cursor+look) < after.length; look++){
+        const t = after[cursor+look].toUpperCase();
+        if(!studio && STUDIO_MAP[t]) { studio = STUDIO_MAP[t]; }
+        if(!ob && /^OB\d+$/i.test(t)) { ob = t; }
+        // If we found both, break
+        if(studio && ob) break;
+      }
+      // If studio not found but some token equals studio code without mapping (unlikely), set raw
+      if(!studio){
+        for(let look=0; look<4 && (cursor+look) < after.length; look++){
+          const t = after[cursor+look].toUpperCase();
+          if(/^[A-Z]{1,3}\d?$/.test(t) && STUDIO_MAP[t]) { studio = STUDIO_MAP[t]; break; }
+        }
+      }
+      // If ob wasn't immediately after, we also try to see if an OB appears earlier but not assigned — skip for now
+      days.push({shift, studio, ob});
+    }
+
+    // If at least one day has shift or studio or ob we accept
+    const useful = days.some(d => d.shift || d.studio || d.ob);
+    if(useful) return days;
+  }
+  return null;
+}
+
+/* Build events given per-day objects */
+function buildEventsFromPerDay(startDate, perDayArray, mergedCodeTimeMap, mergedStudiosMap, personName){
+  const events = [];
+  for(let i=0;i<7;i++){
+    const dayObj = perDayArray[i] || {};
+    let code = dayObj.shift ? dayObj.shift.toUpperCase() : null;
+    if(!code) continue;
+    // Time lookup: code could be in mergedCodeTimeMap; otherwise maybe code contains punctuation; try cleaned
+    let t = mergedCodeTimeMap[code] || mergedCodeTimeMap[code.replace(/['"]/g,'')] || null;
+    if(!t){
+      // try simplistic fallback: if code length>1 and last char is letter maybe separate?
+      // skip if no mapping
+      continue;
+    }
+    const [s,e] = t.split('-');
+    if(!s || !e) continue;
+    const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
+    const [sh, sm] = s.split(':').map(Number);
+    const [eh, em] = e.split(':').map(Number);
+    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sh, sm);
+    let end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), eh, em);
+    if(end <= start) end = addMinutes(end, 24*60);
+
+    // Studio: priority: perDay studio (already a display name) -> mergedStudiosMap[code] -> STUDIO_MAP lookup by token if dayObj contained token (we didn't store raw studio code there) -> empty
+    let studioName = '';
+    if(dayObj.studio) studioName = dayObj.studio;
+    else if(mergedStudiosMap[code]) studioName = mergedStudiosMap[code];
+    else if(STUDIO_MAP[code]) studioName = STUDIO_MAP[code];
+
+    // OB:
+    let ob = dayObj.ob || '';
+    // final title: CODE — Studio Name — OBx (omit missing parts)
+    let titleParts = [code];
+    if(studioName) titleParts.push(studioName);
+    if(ob) titleParts.push(ob.toUpperCase());
+    const title = titleParts.join(' — ');
+    const desc = `Shift for ${personName}\nCode: ${code}\nTime: ${t}${studioName ? '\nStudio: ' + studioName : ''}${ob ? '\nOB-Van: ' + ob : ''}`;
+    events.push({title, start, end, desc, location: studioName});
+  }
+  return events;
+}
+
+/* Build ICS */
 function buildICS(events){
   const lines = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
-    'PRODID:-//PDF→Schedule Export//github-pages-demo',
+    'PRODID:-//PDF→Schedule Export//studio-ob-demo',
   ];
   events.forEach((ev,i) => {
     lines.push('BEGIN:VEVENT');
@@ -111,234 +306,204 @@ function buildICS(events){
   return lines.join('\r\n');
 }
 
-/* Attempt to extract text from PDF using pdf.js */
-async function extractTextFromPDF(arrayBuffer){
-  const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
-  const pdf = await loadingTask.promise;
-  let fullText = '';
-  for(let p=1; p<=pdf.numPages; p++){
-    const page = await pdf.getPage(p);
-    // try textContent
-    const content = await page.getTextContent();
-    const pageText = content.items.map(i => i.str).join(' ');
-    fullText += '\n\n' + pageText;
+/* UI legend editor rendering (similar to prior version) */
+function renderLegendEditor(legendBlocks){
+  const container = document.getElementById('legendContainer');
+  container.innerHTML = '';
+  if(!legendBlocks || legendBlocks.length === 0){
+    container.innerHTML = '<div class="small">No LEGEND blocks detected. If the PDF legend is on the top-right of pages, ensure text is selectable (not scanned image).</div>';
+    return;
   }
-  return fullText;
+
+  legendBlocks.forEach((blk, idx) => {
+    const header = document.createElement('div');
+    header.innerHTML = `<strong>Legend block — page ${blk.page}</strong> <div class="small">${blk.text.slice(0,250)}${blk.text.length>250? '...':''}</div>`;
+    container.appendChild(header);
+
+    const parsed = blk.parsed;
+    const tbl = document.createElement('table');
+    const thead = document.createElement('thead');
+    thead.innerHTML = '<tr><th>CODE</th><th>TIME (HH:MM-HH:MM)</th><th>Studio (auto)</th></tr>';
+    tbl.appendChild(thead);
+    const tbody = document.createElement('tbody');
+
+    const codes = parsed.codes && parsed.codes.length ? parsed.codes : Object.keys(parsed.map || {});
+    const seen = new Set();
+    codes.forEach(c => {
+      const code = c.toUpperCase();
+      if(seen.has(code)) return;
+      seen.add(code);
+      const time = parsed.map[code] || '';
+      const autoStudio = STUDIO_MAP[code] || '';
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><input data-code class="code-input" value="${code}" /></td>
+                      <td><input data-time class="time-input" value="${time}" /></td>
+                      <td><input data-studio class="studio-input" value="${autoStudio}" placeholder="Studio name (optional)" /></td>`;
+      tbody.appendChild(tr);
+    });
+    tbl.appendChild(tbody);
+    container.appendChild(tbl);
+  });
+
+  const note = document.createElement('div');
+  note.className = 'small';
+  note.style.marginTop = '8px';
+  note.innerText = 'Edit any times that are incorrect. The studio column pre-fills from known mapping; you can edit if needed. When finished, click "Confirm Legend & Build Calendar".';
+  container.appendChild(note);
+
+  document.getElementById('buildBtn').disabled = false;
 }
 
-/* If pdf.js yields little text, fallback to OCR using Tesseract */
-async function ocrArrayBuffer(arrayBuffer){
-  setStatus('Running OCR fallback (Tesseract) — may take time on big PDFs...');
-  const blob = new Blob([arrayBuffer], {type: 'application/pdf'});
-  // Tesseract cannot directly read PDF — but many pages are images inside PDF; in static demo we won't implement full PDF -> images
-  // For this demo, we attempt pdf.js extraction only. If no text, we inform the user to try better-quality PDF.
-  setStatus('OCR fallback not fully supported in this static demo. If text extraction fails, please upload a text-based PDF or provide clearer scans.');
-  return '';
-}
-
-/* Parse legend lines: lines containing code tokens followed by time tokens.
-   Example snippet encountered in your PDF:
-   "01 05 1M 2E 2Q 3Z 6E05:45-14:20 05:55-14:30 09:30-18:05 11:25-20:00 14:00-22:35 07:30-16:05 05:30-13:05"
-   The parser: find sequences where there's a group of tokens (codes) then a sequence of time ranges.
-*/
-function parseLegendFromText(allText){
-  const legends = {}; // code -> {startStr,endStr}
-  // Normalize spacing
-  const norm = allText.replace(/\r\n/g,'\n').replace(/\t/g,' ');
-  const lines = norm.split('\n').map(l => l.trim()).filter(Boolean);
-
-  // We'll look for lines containing multiple time patterns like "hh:mm-hh:mm"
-  const timeRegexGlobal = /([0-2]?\d:[0-5]\d-[0-2]?\d:[0-5]\d)/g;
-
-  lines.forEach(line=>{
-    const times = [...line.matchAll(timeRegexGlobal)].map(m=>m[1]);
-    if(times.length >= 1){
-      // Extract words before the first time — treat as code tokens (split by spaces, punctuation)
-      const idx = line.search(timeRegexGlobal);
-      if(idx>0){
-        let codePart = line.slice(0, idx).trim();
-        // codePart may contain punctuation; split on spaces and quotes
-        const codeTokens = codePart.split(/[\s,;]+/).map(s=>s.replace(/['"]/g,'').trim()).filter(Boolean);
-        // sometimes the code tokens list length matches times length (very likely)
-        if(codeTokens.length >= 1){
-          // If times count equals codeTokens length, map accordingly.
-          if(codeTokens.length === times.length){
-            for(let i=0;i<codeTokens.length;i++){
-              legends[codeTokens[i]] = times[i];
-            }
-          } else {
-            // Heuristic: codes appear, then times (weekly 7 times may follow). We'll map first N codes to first N times if possible.
-            // But better: if there are exactly 7 times, they are Mon..Sun. Then map codes sequentially to those 7 times (if codes count equals 7).
-            if(times.length === 7 && codeTokens.length>0){
-              // Map each code token (if codeTokens length == 7) else try sliding: often many codes (like "01 05 1M 2E 2Q 3Z 6E") correspond to 7 times.
-              for(let i=0;i<codeTokens.length;i++){
-                if(i < 7) legends[codeTokens[i]] = times[i];
-              }
-            } else {
-              // fallback: map first min(len) pairs
-              const L = Math.min(codeTokens.length, times.length);
-              for(let i=0;i<L;i++) legends[codeTokens[i]] = times[i];
-            }
-          }
-        }
-      }
+/* collect legend UI inputs */
+function collectLegendFromUI(){
+  const container = document.getElementById('legendContainer');
+  const maps = {}; // code->time
+  const studios = {}; // code->studio
+  if(!container) return {maps, studios};
+  const codeInputs = container.querySelectorAll('input[data-code]');
+  codeInputs.forEach(inp => {
+    const tr = inp.closest('tr');
+    const code = (inp.value || '').toUpperCase().trim();
+    const time = (tr.querySelector('input[data-time]').value || '').trim();
+    const studio = (tr.querySelector('input[data-studio]').value || '').trim();
+    if(code){
+      if(time) maps[code] = time;
+      if(studio) studios[code] = studio;
     }
   });
-  return legends;
+  return {maps, studios};
 }
 
-/* Given a person token list (codes), and mapping code->time, create events for each day of week starting from startDate */
-function buildEventsFromCodesForWeek(startDate, codeTokensFor7Days, codeMap, personName){
-  const events = [];
-  // ensure length 7 by filling missing with null
-  const codes = Array.from({length:7}, (_,i)=> codeTokensFor7Days[i] || null);
-  for(let i=0;i<7;i++){
-    const code = codes[i];
-    if(!code) continue;
-    const t = codeMap[code] || codeMap[code.replace(/['"]/g,'')] || null;
-    if(!t) continue;
-    // t format "HH:MM-HH:MM"
-    const [s,e] = t.split('-');
-    if(!s || !e) continue;
-    const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
-    // parse hours/minutes
-    const [sh, sm] = s.split(':').map(Number);
-    const [eh, em] = e.split(':').map(Number);
-    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sh, sm);
-    let end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), eh, em);
-    // if end <= start, assume next day
-    if(end <= start) end = addMinutes(end, 24*60);
-    events.push({
-      title: `${personName} — ${code}`,
-      start, end,
-      desc: `Shift code: ${code}`
-    });
-  }
-  return events;
-}
+/* Global state */
+let lastParsed = {pages: null, legendBlocks: null, weekStart: null, detectedCodesSet: null, perDayAuto: null};
 
-/* Try to find the person line and extract codes for 7 days:
-   Approach:
-    - find the occurrence of "LASTNAME, FIRSTNAME" (case-insensitive)
-    - take the rest of the tokens until newline; many records appear as "LASTNAME, FIRSTNAME 'CODE' 'CODE' ..." where codes correspond to days
-    - if the tokens include numbers like 95,96 or OB4, ignore tokens that are purely numeric or known markers like OB-, 95,96,AFP1 etc.
-    - pick tokens that match any code from legend map; we will keep token order and map as Mon→Sun.
-*/
-function extractCodeSequenceForPerson(allText, last, first, knownCodes){
-  const norm = allText.replace(/\r\n/g,'\n');
-  const search = `${last}, ${first}`.toUpperCase();
-  const up = norm.toUpperCase();
-  const idx = up.indexOf(search);
-  if(idx === -1){
-    // try search without comma
-    const alt = `${last} ${first}`.toUpperCase();
-    const idx2 = up.indexOf(alt);
-    if(idx2 === -1) return null;
-    return extractTokensAfterIndex(up, idx2+alt.length, knownCodes);
-  }
-  return extractTokensAfterIndex(up, idx+search.length, knownCodes);
-}
-
-function extractTokensAfterIndex(textUpper, startIdx, knownCodes){
-  // take the remainder of the same line (until newline)
-  const rest = textUpper.slice(startIdx, startIdx + 400); // limit
-  // split on whitespace and punctuation
-  const tokens = rest.split(/[\s]+/).map(t => t.replace(/[^\w\-\+']/g,'').trim()).filter(Boolean);
-  // filter tokens that look like legend codes (present in knownCodes) or are short (1-3 chars) and contain letters/numbers
-  const candidate = tokens.filter(t => knownCodes.has(t) || /^[A-Z0-9'*\+]{1,4}$/.test(t));
-  // Now try to pick first up to 7 tokens that map to codes set; if we have >7 we pick first 7 matching knownCodes
-  const out = [];
-  for(let t of candidate){
-    if(out.length>=7) break;
-    // if token is known code directly, accept
-    if(knownCodes.has(t)){
-      out.push(t);
-      continue;
-    }
-    // sometimes tokens like "SE'VI'" include quotes; try to extract inner code parts like VI or SE'VI'
-    const cleaned = t.replace(/^'+|'+$/g,'');
-    if(knownCodes.has(cleaned)) { out.push(cleaned); continue; }
-    // else if token contains a known code as substring, pick the substring
-    for(let kc of knownCodes){
-      if(t.includes(kc) && out.length<7){
-        out.push(kc);
-        break;
-      }
-    }
-  }
-  return out;
-}
-
-/* Main handler */
-document.getElementById('process').addEventListener('click', async ()=>{
+/* Parse button */
+document.getElementById('parseBtn').addEventListener('click', async ()=>{
   const f = document.getElementById('pdfFile').files[0];
   const first = (document.getElementById('firstName').value || '').trim();
   const last = (document.getElementById('lastName').value || '').trim();
-  if(!f) { alert('Please choose a PDF file.'); return; }
-  if(!first || !last) { alert('Please enter first and last name.'); return; }
-
-  setStatus('Reading PDF...');
+  if(!f){ alert('Choose a PDF file'); return; }
+  if(!first || !last){ alert('Enter first and last name'); return; }
+  setStatus('Reading PDF (pdf.js)...');
   const ab = await f.arrayBuffer();
-  let text = '';
+  let pages = [];
   try{
-    text = await extractTextFromPDF(ab);
+    pages = await extractTextFromPDF(ab);
   }catch(e){
     console.error(e);
-    text = '';
-  }
-  if(!text || text.trim().length < 50){
-    // fallback: notify user
-    text = await ocrArrayBuffer(ab);
-  }
-
-  if(!text || text.trim().length < 10){
-    setStatus('Failed to extract text from this PDF. Try uploading a text-based PDF (not images) or provide clearer scans.');
+    setStatus('PDF extraction failed.');
     return;
   }
+  setStatus('Detecting legend blocks...');
+  const legendBlocks = extractLegendsFromPages(pages);
+  legendBlocks.forEach(b => { b.parsed = parseLegendChunk(b.text); });
 
-  setStatus('Parsing legend and header...');
-  // find week range dd/mm/yyyy dd/mm/yyyy
-  const headerMatch = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
-  let weekStartDate = null;
-  if(headerMatch){
-    weekStartDate = parseDDMMYYYY(headerMatch[1]);
+  const codeSet = new Set();
+  legendBlocks.forEach(b => {
+    Object.keys(b.parsed.map || {}).forEach(k => codeSet.add(k.toUpperCase()));
+    (b.parsed.codes || []).forEach(c => codeSet.add(c.toUpperCase()));
+  });
+
+  const weekStart = detectWeekStartFromPages(pages);
+
+  lastParsed = {pages, legendBlocks, weekStart, detectedCodesSet: codeSet};
+
+  setStatus('Searching for person row and per-day tokens...');
+  const perDay = extractPerDayFromPersonRow(pages, last.toUpperCase(), first.toUpperCase(), codeSet);
+  lastParsed.perDayAuto = perDay;
+
+  renderLegendEditor(legendBlocks);
+
+  const container = document.getElementById('legendContainer');
+  if(perDay){
+    const found = document.createElement('div');
+    found.style.marginTop='8px';
+    found.className='small';
+    // display per-day summary
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    let html = `<strong>Detected per-day (Mon→Sun):</strong><br/><table style="width:100%;border-collapse:collapse;"><tr><th>Day</th><th>Code</th><th>Studio</th><th>OB</th></tr>`;
+    for(let i=0;i<7;i++){
+      const d = perDay[i] || {};
+      html += `<tr><td>${dayNames[i]}</td><td>${d.shift || ''}</td><td>${d.studio || ''}</td><td>${d.ob || ''}</td></tr>`;
+    }
+    html += '</table>';
+    found.innerHTML = html;
+    container.appendChild(found);
+    setStatus('Legend detected and person row parsed. Review legend and press Confirm.');
+    // store auto in hidden
+    const hid = document.createElement('input'); hid.type='hidden'; hid.id='autoPerDay'; hid.value = JSON.stringify(perDay);
+    container.appendChild(hid);
   } else {
-    // fallback: ask user? Instead pick today as start (but we must not ask). We'll abort gracefully.
-    setStatus('Could not find week header date in PDF. The app expects a header like "08/12/2025 14/12/2025". Please confirm the PDF has that header.'); 
+    setStatus('Legend detected. Could not parse person row automatically. You can still edit legend and add manual codes for Mon→Sun below.');
+    const manual = document.createElement('div');
+    manual.style.marginTop='8px';
+    manual.innerHTML = `<div class="small">Enter up to 7 tokens for Mon→Sun (comma separated). Use tokens exactly as in PDF (codes, N3, OB3 if present for a day):</div>
+                        <input id="manualCodesInput" placeholder="e.g. 01, 02, 2Q, -, N4, 01, OB3" />`;
+    container.appendChild(manual);
+  }
+});
+
+/* Build button */
+document.getElementById('buildBtn').addEventListener('click', async ()=>{
+  const first = (document.getElementById('firstName').value || '').trim();
+  const last = (document.getElementById('lastName').value || '').trim();
+  if(!lastParsed || !lastParsed.pages) { alert('Please parse a PDF first'); return; }
+
+  const {maps: codeMapFromUI, studios: codeStudioMapFromUI} = collectLegendFromUI();
+
+  // per-day data: prefer auto, else manual
+  let perDay = null;
+  const autoEl = document.getElementById('autoPerDay');
+  if(autoEl && autoEl.value) perDay = JSON.parse(autoEl.value);
+  const manualEl = document.getElementById('manualCodesInput');
+  if(manualEl && manualEl.value.trim()){
+    const toks = manualEl.value.split(',').map(s=>s.trim()).filter(Boolean);
+    // build perDay array of objects (simple: token per day; if token contains OB assign OB; if token is N3 assign studio)
+    perDay = [];
+    for(let i=0;i<7;i++){
+      const tok = toks[i] ? toks[i].toUpperCase() : null;
+      if(!tok){ perDay.push({}); continue; }
+      let obj = {};
+      if(/^OB\d+$/i.test(tok)){ obj.ob = tok; }
+      else if(STUDIO_MAP[tok]){ obj.studio = STUDIO_MAP[tok]; }
+      else { obj.shift = tok; }
+      perDay.push(obj);
+    }
+  }
+
+  if(!perDay){
+    if(!confirm('No per-day codes detected for the person. Proceed with empty schedule?')) return;
+  }
+
+  // merged code time map (legend blocks + UI overrides)
+  const mergedMap = {};
+  lastParsed.legendBlocks.forEach(b => {
+    Object.entries(b.parsed.map || {}).forEach(([k,v]) => mergedMap[k.toUpperCase()] = v);
+  });
+  Object.entries(codeMapFromUI).forEach(([k,v]) => mergedMap[k.toUpperCase()] = v);
+
+  // merged studios map from UI (user may have edited)
+  const mergedStudios = {};
+  Object.entries(codeStudioMapFromUI).forEach(([k,v]) => mergedStudios[k.toUpperCase()] = v);
+
+  const start = lastParsed.weekStart;
+  if(!start){
+    setStatus('Could not detect week start date from PDF. The app expects dd/mm/yyyy dd/mm/yyyy in header. Please ensure PDF includes that header.');
     return;
   }
 
-  // parse legends
-  const codeMap = parseLegendFromText(text);
-  const knownCodesSet = new Set(Object.keys(codeMap).map(k => k.toUpperCase()));
+  const events = buildEventsFromPerDay(start, perDay, mergedMap, mergedStudios, `${first} ${last}`);
 
-  if(Object.keys(codeMap).length === 0){
-    setStatus('Could not detect legend code→time mappings. The app expects lines with codes followed by time ranges (HH:MM-HH:MM). See the PDF legend.'); 
-    return;
-  }
-
-  setStatus('Looking for person row and extracting codes...');
-  // Use uppercase names (PDF is uppercase)
-  const codesSeq = extractCodeSequenceForPerson(text, last.toUpperCase(), first.toUpperCase(), knownCodesSet);
-  if(!codesSeq || codesSeq.length === 0){
-    setStatus('Could not find the person row or no shift codes detected for that person. Try variations: enter EXACT last name and first name as in PDF (uppercase, with comma).');
-    return;
-  }
-
-  // Build events
-  const events = buildEventsFromCodesForWeek(weekStartDate, codesSeq, Object.fromEntries(Object.entries(codeMap).map(([k,v])=>[k.toUpperCase(), v])), `${first} ${last}`);
   if(events.length === 0){
-    setStatus('Found person and codes, but no valid time mapping for those codes (legend mapping missing).');
+    setStatus('No events built — ensure codes are correct and legend entries include time ranges (HH:MM-HH:MM).');
     return;
   }
 
-  // Show results and build ICS
-  setStatus('Building ICS...');
   const ics = buildICS(events);
   const out = document.getElementById('output');
   out.innerHTML = '';
   const dlBtn = document.createElement('button');
-  dlBtn.textContent = 'Download .ics (import to Google Calendar / Outlook)';
+  dlBtn.textContent = `Download .ics (${events.length} events)`;
   dlBtn.onclick = ()=> download(`${last}_${first}_schedule.ics`, ics);
   out.appendChild(dlBtn);
 
@@ -349,14 +514,15 @@ document.getElementById('process').addEventListener('click', async ()=>{
     div.className = 'event';
     const s = ev.start.toLocaleString();
     const e = ev.end.toLocaleString();
-    div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>
+    const loc = ev.location ? `<div class="small">Location: ${ev.location}</div>` : '';
+    div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>${loc}
                      <div style="margin-top:6px;">
                        <a target="_blank" href="${gcalAddUrl(ev.title, ev.start, ev.end, ev.desc)}">Add this event in Google Calendar (single)</a>
                      </div>`;
     list.appendChild(div);
   });
   out.appendChild(list);
-  setStatus(`Done — ${events.length} events built for ${first} ${last}. You can download the .ics or add events individually to Google Calendar.`);
+  setStatus(`Done — ${events.length} events built for ${first} ${last}.`);
 });
 </script>
 </body>
