@@ -1,14 +1,14 @@
 <!doctype html>
-<html lang="en">
+<html lang="it">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PDF → Schedule (Strict shift list + studios + OB)</title>
+<title>PDF → Orario → ICS (turni rigidi)</title>
 <style>
   body {font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial; max-width:980px; margin:18px auto; padding:12px;}
   h1{margin:0 0 8px 0;font-size:1.1rem}
   label{display:block;margin-top:10px;font-weight:600}
-  input[type=text], input[type=file]{width:100%; padding:8px; box-sizing:border-box}
+  input[type=text], input[type=file], select {width:100%; padding:8px; box-sizing:border-box}
   button{margin-top:10px;padding:10px 14px;cursor:pointer}
   .small{font-size:0.9rem;color:#444}
   table{width:100%;border-collapse:collapse;margin-top:10px}
@@ -16,41 +16,47 @@
   th{background:#f3f3f3}
   .events{margin-top:12px}
   .event{border:1px solid #ddd;padding:8px;margin-bottom:6px;border-radius:6px}
+  .grid {display:grid; grid-template-columns:1fr 1fr; gap:8px;}
+  .day-edit {border:1px solid #eee; padding:8px; border-radius:6px;}
 </style>
 </head>
 <body>
-  <h1>PDF → Schedule (strict shift list)</h1>
-  <p class="small">Upload the PDF, enter First and Last name exactly as in the PDF (or close). The app will detect up to 7 shifts (Mon→Sun) from your row using only the canonical shift codes you gave. Studio names and per-day OB vans are attached to event titles. Download an .ics or add events individually to Google Calendar.</p>
+  <h1>Convertitore PDF → Orario (.ics)</h1>
+  <p class="small">Carica il PDF, inserisci Nome e Cognome (l'app prova automaticamente più varianti). Il sistema cerca i turni della riga dell'impiegato usando **solo** la lista canonica di turni fornita. Correggi eventuali valori nella griglia giornaliera se necessario, poi genera l'.ics.</p>
 
-  <label>PDF file</label>
+  <label>File PDF</label>
   <input id="pdfFile" type="file" accept="application/pdf" />
 
   <div style="display:flex; gap:8px; margin-top:8px;">
     <div style="flex:1">
-      <label>First name</label>
-      <input id="firstName" type="text" placeholder="Marco" />
+      <label>Nome</label>
+      <input id="firstName" type="text" placeholder="es. Antonio" />
     </div>
     <div style="flex:1">
-      <label>Last name</label>
-      <input id="lastName" type="text" placeholder="Natali" />
+      <label>Cognome</label>
+      <input id="lastName" type="text" placeholder="es. Amato" />
     </div>
   </div>
 
   <div style="margin-top:12px;">
-    <button id="parseBtn">Parse PDF</button>
-    <button id="buildBtn" disabled>Build Calendar (.ics)</button>
+    <button id="parseBtn">Analizza PDF</button>
+    <button id="buildBtn" disabled>Genera Calendario (.ics)</button>
   </div>
 
   <div id="status" class="small" style="margin-top:10px"></div>
-  <div id="detected" style="margin-top:10px"></div>
+
+  <div id="detected" style="margin-top:12px"></div>
+
+  <div id="overrideArea" style="margin-top:12px"></div>
+
   <div id="output" style="margin-top:12px"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script>
-/* =========================
-   Canonical shifts (from user)
-   Keys are stored uppercase, with spaces removed in a helper map as well
-   ========================= */
+/* ----------------------------
+   CONFIGURAZIONE: TURNI CANONICI
+   ---------------------------- */
+/* La lista è esattamente quella che hai fornito; le chiavi sono in maiuscolo come canonical */
 const RAW_SHIFTS = {
   "4O":"05:55-13:30",
   "5O":"05:55-14:30",
@@ -93,22 +99,20 @@ const RAW_SHIFTS = {
   "XXX":"00:00-00:00"
 };
 
-/* Build helper maps:
-   - SHIFT_MAP: normalized token (upper + collapsed spaces) -> key in RAW_SHIFTS
-   - SHIFT_TIMES: uppercase key -> time string
-*/
-const SHIFT_TIMES = {};
-const SHIFT_MAP = {};
-Object.keys(RAW_SHIFTS).forEach(k => {
+/* Normalizzazione rapida + mappa per matching (case-insensitive; simboli sono distinti) */
+const SHIFT_TIMES = {};   // key uppercase canonical -> time
+const SHIFT_MAP = {};     // collapsed/uppercase token -> canonical key
+Object.keys(RAW_SHIFTS).forEach(k=>{
   const up = k.toUpperCase();
   SHIFT_TIMES[up] = RAW_SHIFTS[k];
   const collapsed = up.replace(/\s+/g,'');
-  SHIFT_MAP[collapsed] = up; // map collapsed form to canonical key
-  // also map exact uppercase form to itself for tokens that preserve spaces
+  SHIFT_MAP[collapsed] = up; // esempio "I*CO" -> "I* CO" canonical
   SHIFT_MAP[up] = up;
 });
 
-/* Studio mapping (hard-coded) */
+/* ----------------------------
+   MAPPA STUDI (hard-coded)
+   ---------------------------- */
 const STUDIO_MAP = {
   'N1':'Nomentano 1','N2':'Nomentano 2','N3':'Nomentano 3','N4':'Nomentano 4','N5':'Nomentano 5','N6':'Nomentano 6',
   'AFP1':'Foro Italico',
@@ -118,7 +122,12 @@ const STUDIO_MAP = {
   'AUM':'Montecitorio','DISP':'Disposizione','TDV':'Teatro delle Vittorie','SE':'Servizio Esterno'
 };
 
-/* Utilities */
+/* Tokens da ignorare (riposo) */
+const IGNORED_TOKENS = new Set(['95','96']);
+
+/* ----------------------------
+   UTILITY
+   ---------------------------- */
 function setStatus(s){ document.getElementById('status').innerText = s; }
 function toICSDateUTC(d){
   const Y = d.getUTCFullYear().toString().padStart(4,'0');
@@ -146,7 +155,9 @@ function gcalAddUrl(title, startDate, endDate, desc){
   return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
 }
 
-/* PDF text extraction (pdf.js) */
+/* ----------------------------
+   PDF text extraction (pdf.js)
+   ---------------------------- */
 async function extractPagesAsText(arrayBuffer){
   const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
   const pdf = await loadingTask.promise;
@@ -160,7 +171,7 @@ async function extractPagesAsText(arrayBuffer){
   return pages;
 }
 
-/* Find week start (looks for dd/mm/yyyy dd/mm/yyyy header) */
+/* Rileva inizio settimana dal header dd/mm/yyyy dd/mm/yyyy */
 function detectWeekStart(pages){
   for(const t of pages){
     const m = t.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
@@ -169,98 +180,110 @@ function detectWeekStart(pages){
   return null;
 }
 
-/* Find person row and parse tokens around it to build a per-day list:
-   - For each day, we look for the next token that matches a shift in SHIFT_MAP.
-   - After locating a shift token, we scan the immediate tokens after it for:
-       * a studio code (one of STUDIO_MAP keys),
-       * an OB token like OB1, OB2...
-   - If shift is "XXX" (00:00-00:00) we skip creating an event for that day.
-*/
-function parsePersonRowPerDay(pages, last, first){
-  const searchForms = [
-    `${last}, ${first}`,
-    `${last} ${first}`,
-    `${first} ${last}`
-  ].map(s => s.toUpperCase());
+/* ----------------------------
+   Estrazione riga persona (Migliorata)
+   - Prova molte varianti del nome (COGNOME, NOME ; NOME COGNOME ; COGNOME NOME)
+   - Estrae fino a ~200 token dopo il nome e costruisce l'array per 7 giorni
+   - Accetta solo token che matchano SHIFT_MAP (o loro forma collassata)
+   - Ignora token in IGNORED_TOKENS e i codici studio quando cerchiamo il turno
+   ---------------------------- */
+function parsePersonRowPerDay(pages, rawFirst, rawLast){
+  const first = (rawFirst||'').toUpperCase().trim();
+  const last = (rawLast||'').toUpperCase().trim();
+
+  // Costruiamo le possibili stringhe di ricerca in uppercase
+  const searches = [];
+  if(first && last){
+    searches.push(`${last}, ${first}`); // COGNOME, NOME
+    searches.push(`${first} ${last}`);  // NOME COGNOME
+    searches.push(`${last} ${first}`);  // COGNOME NOME (senza virgola)
+  } else {
+    // se l'utente inserisce una sola stringa, suddividila se contiene spazio
+    const combined = (rawFirst + ' ' + rawLast).trim();
+    const parts = combined.split(/\s+/).map(s=>s.toUpperCase()).filter(Boolean);
+    if(parts.length>=2){
+      searches.push(`${parts[1]}, ${parts[0]}`);
+      searches.push(`${parts[0]} ${parts[1]}`);
+      searches.push(`${parts[1]} ${parts[0]}`);
+    } else {
+      searches.push(combined.toUpperCase());
+    }
+  }
 
   for(const pageText of pages){
     const up = pageText.toUpperCase();
     let pos = -1;
-    for(const s of searchForms){
+    let foundSearch = null;
+    for(const s of searches){
       pos = up.indexOf(s);
-      if(pos !== -1) break;
+      if(pos !== -1){ foundSearch = s; break; }
     }
     if(pos === -1) continue;
 
-    // take 700 chars after name (should include full row)
-    const snippet = up.slice(pos, pos + 800);
-    // split into tokens preserving OB and punctuation; trim stray punctuation
+    // Prendiamo chunk dopo il nome (sufficiente per la riga)
+    const snippet = up.slice(pos, pos + 900);
+    // Tokenizziamo preservando OB\d+ e alfanumerici
     const rawTokens = snippet.split(/[\s]+/).map(t => t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
 
-    // find index of the name token in tokens
-    let nameIdx = rawTokens.findIndex(tok => tok.includes(last.toUpperCase()) || tok.includes(first.toUpperCase()));
+    // Troviamo indice del token del nome
+    let nameIdx = rawTokens.findIndex(tok => tok.includes(last) || tok.includes(first));
     if(nameIdx === -1) nameIdx = 0;
-    const after = rawTokens.slice(nameIdx + 1, nameIdx + 200).map(t => t.replace(/["']/g,'').trim()).filter(Boolean);
+    const after = rawTokens.slice(nameIdx + 1, nameIdx + 300).map(t => t.replace(/["']/g,'').trim()).filter(Boolean);
 
+    // Ora costruiamo per 7 giorni
     const perDay = [];
     let cursor = 0;
+
     for(let day=0; day<7; day++){
-      // find next shift token
-      let shiftToken = null;
-      let rawShiftToken = null;
-      while(cursor < after.length && shiftToken === null){
+      let foundShift = null;
+      let rawShift = null;
+      // cerchiamo token validi fino a 40 token di lookahead
+      let lookCount = 0;
+      while(cursor < after.length && lookCount < 40 && !foundShift){
         const tok = after[cursor].trim();
-        cursor++;
+        cursor++; lookCount++;
         if(!tok) continue;
         const norm = tok.toUpperCase();
+        if(IGNORED_TOKENS.has(norm)) continue; // ignoriamo 95/96
+        // non consideriamo come shift i codici studio (N1..N6, SR1.. etc) - li considereremo solo come studio
         const collapsed = norm.replace(/\s+/g,'');
-        // match exactly: try collapsed form first, then exact uppercase
-        let foundKey = null;
-        if(SHIFT_MAP[collapsed]) foundKey = SHIFT_MAP[collapsed];
-        else if(SHIFT_MAP[norm]) foundKey = SHIFT_MAP[norm];
-        // If foundKey exists, that's a valid shift
-        if(foundKey){
-          shiftToken = foundKey; // canonical key like "2Q" or "I* CO"
-          rawShiftToken = tok;
+        // Priorità: match esatto con simboli (es "G*"), poi collapsed
+        let matchKey = null;
+        if(SHIFT_MAP[norm]) matchKey = SHIFT_MAP[norm];
+        else if(SHIFT_MAP[collapsed]) matchKey = SHIFT_MAP[collapsed];
+        // È un turno valido?
+        if(matchKey){
+          foundShift = matchKey;
+          rawShift = tok;
           break;
         }
-        // otherwise not a shift token -> skip (studios or OB may appear; also skip numeric dates)
+        // altrimenti salta (può essere studio, ob, numeri, ecc)
       }
 
-      // if no shift found for this day, leave empty object
-      if(!shiftToken){
-        perDay.push({});
-        continue;
-      }
-
-      // after finding shift at current cursor-1, lookahead few tokens to find studio & OB
-      let studioFound = '';
-      let obFound = '';
-      for(let look=0; look<6 && (cursor + look) < after.length; look++){
-        const t = after[cursor + look].toUpperCase().replace(/[,.;:]+$/g,'');
-        // OB detection
-        if(!obFound && /^OB\d+$/i.test(t)) obFound = t;
-        // studio detection: exact match to studio keys
-        if(!studioFound){
-          // try exact and collapsed
+      // lookahead rapido per studio e OB vicino al turno (se trovato)
+      let studio = '';
+      let ob = '';
+      if(foundShift){
+        for(let look=0; look<8 && (cursor + look) < after.length; look++){
+          const t = after[cursor + look].toUpperCase().replace(/[,.;:]+$/g,'');
+          if(!ob && /^OB\d+$/i.test(t)) ob = t;
           const tcollapsed = t.replace(/\s+/g,'');
-          if(STUDIO_MAP[t]) studioFound = STUDIO_MAP[t];
-          else if(STUDIO_MAP[tcollapsed]) studioFound = STUDIO_MAP[tcollapsed];
+          if(!studio && STUDIO_MAP[t]) studio = STUDIO_MAP[t];
+          else if(!studio && STUDIO_MAP[tcollapsed]) studio = STUDIO_MAP[tcollapsed];
+          if(studio && ob) break;
         }
-        if(studioFound && obFound) break;
       }
 
-      perDay.push({shift: shiftToken, shiftRaw: rawShiftToken, studio: studioFound, ob: obFound});
+      perDay.push({shift: foundShift, shiftRaw: rawShift, studio, ob});
     }
 
-    // return perDay if at least one detected
+    // se troviamo almeno un shift valido, ritorniamo array
     if(perDay.some(d => d.shift)) return perDay;
-    // otherwise continue search on next page
   }
   return null;
 }
 
-/* Build events from perDay with canonical times from SHIFT_TIMES and studios/ob applied */
+/* Costruisce eventi utilizzando gli orari canonici */
 function buildEvents(startDate, perDay, personName){
   const evs = [];
   for(let i=0;i<7;i++){
@@ -269,7 +292,7 @@ function buildEvents(startDate, perDay, personName){
     const key = d.shift.toUpperCase();
     const time = SHIFT_TIMES[key];
     if(!time) continue;
-    if(time === "00:00-00:00") continue; // skip XXX/off
+    if(time === "00:00-00:00") continue; // XXX skip
     const [s,e] = time.split('-').map(t=>t.trim());
     if(!(s && e)) continue;
     const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
@@ -277,26 +300,28 @@ function buildEvents(startDate, perDay, personName){
     const [eh, em] = e.split(':').map(Number);
     const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sh, sm);
     let end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), eh, em);
-    if(end <= start) end = addMinutes(end, 24*60); // cross-midnight
-    const studioName = d.studio || (STUDIO_MAP[d.shift] || '') || '';
+    if(end <= start) end = addMinutes(end, 24*60);
+    // studio preferito: d.studio (già nome) -> altrimenti mappa key se corrisponde a studio
+    let studioName = d.studio || (STUDIO_MAP[d.shift] || '') || '';
+    // se studioName vuoto ma il token shift stesso è anche codice studio (es "N1") => STUDIO_MAP
+    if(!studioName && STUDIO_MAP[key]) studioName = STUDIO_MAP[key];
     const ob = d.ob || '';
-    // title constructing: CODE — Studio Name — OBx
     const parts = [d.shift];
     if(studioName) parts.push(studioName);
     if(ob) parts.push(ob.toUpperCase());
     const title = parts.join(' — ');
-    const desc = `Shift for ${personName}\nCode: ${d.shift}\nTime: ${s} - ${e}${studioName ? `\nStudio: ${studioName}` : ''}${ob ? `\nOB: ${ob}` : ''}`;
+    const desc = `Turno: ${d.shift}\nOrario: ${s} - ${e}${studioName ? `\nStudio: ${studioName}` : ''}${ob ? `\nOB: ${ob}` : ''}`;
     evs.push({title, start, end, desc, location: studioName});
   }
   return evs;
 }
 
-/* Build ICS string */
+/* Crea ICS */
 function buildICS(events){
-  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Schedule//strict-shift-v1'];
+  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Orario//v1'];
   events.forEach((ev,i)=>{
     lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${Date.now()}-${i}@pdf-schedule`);
+    lines.push(`UID:${Date.now()}-${i}@pdf-orario`);
     lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`);
     lines.push(`DTSTART:${toICSDateUTC(ev.start)}`);
     lines.push(`DTEND:${toICSDateUTC(ev.end)}`);
@@ -309,7 +334,9 @@ function buildICS(events){
   return lines.join('\r\n');
 }
 
-/* UI & flow */
+/* ----------------------------
+   UI e flusso
+   ---------------------------- */
 let lastPages = null;
 let lastPerDay = null;
 let lastWeekStart = null;
@@ -318,62 +345,128 @@ document.getElementById('parseBtn').addEventListener('click', async ()=>{
   const f = document.getElementById('pdfFile').files[0];
   const first = (document.getElementById('firstName').value || '').trim();
   const last = (document.getElementById('lastName').value || '').trim();
-  if(!f){ alert('Choose a PDF file'); return; }
-  if(!first || !last){ alert('Enter first and last name'); return; }
+  if(!f){ alert('Seleziona un file PDF.'); return; }
+  if(!first && !last){ alert('Inserisci almeno Nome o Cognome.'); return; }
 
-  setStatus('Reading PDF...');
+  setStatus('Lettura PDF in corso...');
   const ab = await f.arrayBuffer();
   let pages = [];
   try{
     pages = await extractPagesAsText(ab);
   }catch(err){
     console.error(err);
-    setStatus('PDF parsing failed. Make sure the PDF contains selectable text (not only images).');
+    setStatus('Estrazione del testo fallita. Il PDF potrebbe essere scannerizzato (immagini).');
     return;
   }
   lastPages = pages;
-  setStatus('Detecting week start & parsing person row...');
+
+  setStatus('Riconoscimento inizio settimana e parsing riga persona...');
   lastWeekStart = detectWeekStart(pages);
-  if(!lastWeekStart){ setStatus('Warning: could not detect week header (dd/mm/yyyy dd/mm/yyyy). The app still attempts to parse row, but dates may be incorrect.'); }
-  const perDay = parsePersonRowPerDay(pages, last.toUpperCase(), first.toUpperCase());
+  if(!lastWeekStart) setStatus('Attenzione: non è stato trovato l\'header della settimana (dd/mm/yyyy dd/mm/yyyy). Verrà usata la data odierna come fallback.');
+
+  // Proviamo a costruire perDay
+  const perDay = parsePersonRowPerDay(pages, first, last);
   lastPerDay = perDay;
+
   const det = document.getElementById('detected');
   det.innerHTML = '';
+
   if(!perDay){
-    setStatus('Could not parse person row automatically. Try changing name format to EXACT "LASTNAME, FIRSTNAME" or ensure PDF text is selectable.');
+    setStatus('Impossibile trovare automaticamente la riga della persona. Prova a inserire il cognome esattamente come appare (es. "AMATO, ANTONIO") o verifica che il PDF abbia testo selezionabile.');
     document.getElementById('buildBtn').disabled = true;
     return;
   }
-  // show detected mon->sun
-  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-  let html = `<table><thead><tr><th>Day</th><th>Shift</th><th>Studio</th><th>OB</th><th>Time (canonical)</th></tr></thead><tbody>`;
+
+  // Mostriamo i risultati detect e la griglia di override (giorno per giorno)
+  const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
+  let html = `<h3>Turni rilevati (Lun→Dom)</h3><table><thead><tr><th>Giorno</th><th>Turno</th><th>Studio</th><th>OB</th><th>Orario canonico</th></tr></thead><tbody>`;
   for(let i=0;i<7;i++){
     const d = perDay[i] || {};
     const key = d.shift ? d.shift.toUpperCase() : '';
     const collapsed = key.replace(/\s+/g,'');
-    const mapped = SHIFT_MAP[collapsed] ? SHIFT_MAP[collapsed] : (SHIFT_MAP[key] ? SHIFT_MAP[key]: null);
+    const mapped = SHIFT_MAP[collapsed] ? SHIFT_MAP[collapsed] : (SHIFT_MAP[key] ? SHIFT_MAP[key] : null);
     const time = mapped ? (SHIFT_TIMES[mapped] || '') : '';
-    html += `<tr><td>${dayNames[i]}</td><td>${d.shift || ''}</td><td>${d.studio || ''}</td><td>${d.ob || ''}</td><td>${time}</td></tr>`;
+    html += `<tr><td>${dayNamesIT[i]}</td><td>${d.shift || ''}</td><td>${d.studio || ''}</td><td>${d.ob || ''}</td><td>${time}</td></tr>`;
   }
   html += '</tbody></table>';
   det.innerHTML = html;
-  setStatus('Parsed person row. Review detected shifts above. If correct, click "Build Calendar" to generate .ics.');
+
+  // Render override grid
+  renderOverrideGrid(perDay);
+
+  setStatus('Controlla i turni rilevati. Se necessario correggi i singoli giorni sotto, poi clicca "Genera Calendario (.ics)".');
   document.getElementById('buildBtn').disabled = false;
 });
 
+/* Render della griglia per modificare ogni giorno prima della generazione */
+function renderOverrideGrid(perDay){
+  const area = document.getElementById('overrideArea');
+  area.innerHTML = '<h3>Correzioni giornaliere (opzionali)</h3>';
+  const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
+  const tbl = document.createElement('table');
+  tbl.innerHTML = `<thead><tr><th>Giorno</th><th>Turno (codice)</th><th>Studio (nome)</th><th>OB (es. OB3)</th></tr></thead>`;
+  const tbody = document.createElement('tbody');
+  for(let i=0;i<7;i++){
+    const d = perDay[i] || {};
+    const row = document.createElement('tr');
+    row.innerHTML = `<td style="width:70px">${dayNamesIT[i]}</td>
+      <td><input data-day="${i}" class="override-shift" value="${d.shift || ''}" placeholder="Es. 2Q" /></td>
+      <td><input data-day="${i}" class="override-studio" value="${d.studio || ''}" placeholder="Es. Nomentano 4" /></td>
+      <td><input data-day="${i}" class="override-ob" value="${d.ob || ''}" placeholder="Es. OB3" /></td>`;
+    tbody.appendChild(row);
+  }
+  tbl.appendChild(tbody);
+  area.appendChild(tbl);
+  area.appendChild(document.createElement('br'));
+  area.appendChild(document.createTextNode('Se non modifichi nulla verranno usati i valori rilevati automaticamente.'));
+}
+
+/* Build button: raccoglie override e genera ics */
 document.getElementById('buildBtn').addEventListener('click', ()=>{
   const first = (document.getElementById('firstName').value || '').trim();
   const last = (document.getElementById('lastName').value || '').trim();
-  if(!lastPerDay) { alert('Parse PDF first'); return; }
-  const start = lastWeekStart || new Date(); // fallback today if not detected
-  const events = buildEvents(start, lastPerDay, `${first} ${last}`);
-  if(events.length === 0){ setStatus('No events created (maybe all days are XXX/off or mapping missing).'); return; }
+  if(!lastPerDay){ alert('Effettua prima l\'analisi del PDF.'); return; }
+
+  // Leggi override dalla UI
+  const overrides = [];
+  for(let i=0;i<7;i++){
+    const s = document.querySelector(`.override-shift[data-day="${i}"]`).value.trim();
+    const st = document.querySelector(`.override-studio[data-day="${i}"]`).value.trim();
+    const ob = document.querySelector(`.override-ob[data-day="${i}"]`).value.trim();
+    overrides.push({shift: s || null, studio: st || null, ob: ob || null});
+  }
+
+  // Costruiamo perDay effettivo: se override.shift è presente usalo (ma validiamo che sia uno shift canonico), altrimenti prendi lastPerDay
+  const perDay = [];
+  for(let i=0;i<7;i++){
+    const ov = overrides[i];
+    let base = lastPerDay[i] || {};
+    let chosen = {shift: base.shift, studio: base.studio, ob: base.ob};
+    if(ov.shift){
+      const norm = ov.shift.toUpperCase().trim();
+      const coll = norm.replace(/\s+/g,'');
+      const key = SHIFT_MAP[coll] ? SHIFT_MAP[coll] : (SHIFT_MAP[norm] ? SHIFT_MAP[norm] : null);
+      if(!key){
+        // se non è uno shift valido avvertiamo ma lo accettiamo comunque come testo (ma non creerà evento se non è nella tabella)
+        chosen.shift = ov.shift;
+      } else {
+        chosen.shift = key;
+      }
+    }
+    if(ov.studio) chosen.studio = ov.studio;
+    if(ov.ob) chosen.ob = ov.ob;
+    perDay.push(chosen);
+  }
+
+  const start = lastWeekStart || new Date();
+  const events = buildEvents(start, perDay, `${first} ${last}`);
+  if(events.length === 0){ setStatus('Nessun evento creato: forse tutti i giorni sono OFF/XXX o i codici non corrispondono.'); return; }
   const ics = buildICS(events);
   const out = document.getElementById('output');
   out.innerHTML = '';
   const dl = document.createElement('button');
-  dl.textContent = `Download .ics (${events.length} events)`;
-  dl.onclick = ()=> download(`${last}_${first}_schedule.ics`, ics);
+  dl.textContent = `Scarica .ics (${events.length} eventi)`;
+  dl.onclick = ()=> download(`${(last||'utente')}_${(first||'utente')}_orario.ics`, ics);
   out.appendChild(dl);
 
   const list = document.createElement('div'); list.className='events';
@@ -381,12 +474,12 @@ document.getElementById('buildBtn').addEventListener('click', ()=>{
     const div = document.createElement('div'); div.className='event';
     const s = ev.start.toLocaleString(); const e = ev.end.toLocaleString();
     div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>
-                     ${ev.location? `<div class="small">Location: ${ev.location}</div>`: ''}
-                     <div style="margin-top:6px;"><a target="_blank" href="${gcalAddUrl(ev.title, ev.start, ev.end, ev.desc)}">Add single event to Google Calendar</a></div>`;
+                     ${ev.location? `<div class="small">Luogo: ${ev.location}</div>`: ''}
+                     <div style="margin-top:6px;"><a target="_blank" href="${gcalAddUrl(ev.title, ev.start, ev.end, ev.desc)}">Aggiungi evento singolo su Google Calendar</a></div>`;
     list.appendChild(div);
   });
   out.appendChild(list);
-  setStatus(`Done — ${events.length} events created.`);
+  setStatus(`Fatto — creati ${events.length} eventi.`);
 });
 </script>
 </body>
