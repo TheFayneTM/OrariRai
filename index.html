@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PDF → Orario (.ics) — Parser definitivo</title>
+<title>PDF → Orario (.ics) — parser definitivo (line-aware)</title>
 <style>
   body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:1000px;margin:18px auto;padding:12px}
   h1{margin:0 0 10px;font-size:1.1rem}
@@ -22,8 +22,8 @@
 </style>
 </head>
 <body>
-  <h1>Convertitore PDF → Orario (.ics) — parser definitivo</h1>
-  <p class="small">Modalità: priorità ai codici tra virgolette, fallback a codici non tra virgolette; ignora rumore (MNS, MFS, &gt;, 95/96). Inserisci Nome e Cognome (l'app prova più varianti). Dopo l'analisi puoi correggere i giorni manualmente.</p>
+  <h1>Convertitore PDF → Orario (.ics) — parser definitivo (line-aware)</h1>
+  <p class="small">Priorità ai codici tra virgolette, fallback a codici non tra virgolette; ignorati rumori (MNS, MFS, &gt;, 95/96). Ora il parser ricostruisce le righe visive dal PDF per assegnare correttamente la riga al dipendente.</p>
 
   <label>File PDF</label>
   <input id="pdfFile" type="file" accept="application/pdf" />
@@ -64,19 +64,9 @@ const RAW_SHIFTS = {
   "RC":"05:30-14:05","RG":"12:00-20:35","SR":"10:45-19:20","TC":"06:30-15:05","UD":"10:25-18:00",
   "US":"11:30-19:05","VI":"11:30-20:05","RU":"05:00-13:35","XXX":"00:00-00:00"
 };
+const SHIFT_TIMES = {}; const SHIFT_MAP = {};
+Object.keys(RAW_SHIFTS).forEach(k=>{ const up=k.toUpperCase(); SHIFT_TIMES[up]=RAW_SHIFTS[k]; const collapsed=up.replace(/\s+/g,''); SHIFT_MAP[collapsed]=up; SHIFT_MAP[up]=up; });
 
-/* Map helper */
-const SHIFT_TIMES = {};
-const SHIFT_MAP = {};
-Object.keys(RAW_SHIFTS).forEach(k=>{
-  const up = k.toUpperCase();
-  SHIFT_TIMES[up] = RAW_SHIFTS[k];
-  const collapsed = up.replace(/\s+/g,'');
-  SHIFT_MAP[collapsed] = up;
-  SHIFT_MAP[up] = up;
-});
-
-/* STUDIO MAP (hard-coded) */
 const STUDIO_MAP = {
   'N1':'Nomentano 1','N2':'Nomentano 2','N3':'Nomentano 3','N4':'Nomentano 4','N5':'Nomentano 5','N6':'Nomentano 6',
   'AFP1':'Foro Italico','1':'Teulada 1','2':'Teulada 2','3':'Teulada 3','4':'Teulada 4','5':'Teulada 5',
@@ -84,63 +74,69 @@ const STUDIO_MAP = {
   'RAN':'Saxa Rubra (Rai News)','AUM':'Montecitorio','DISP':'Disposizione','TDV':'Teatro delle Vittorie','SE':'Servizio Esterno'
 };
 
-/* Tokens da ignorare */
 const IGNORED_TOKENS = new Set(['95','96','MNS','MFS','>','●','--','—']);
 
-/* =============================
-   UTILITIES
-   ============================= */
+/* Utilities */
 function setStatus(s){ document.getElementById('status').innerText = s; }
-function toICSDateUTC(d){
-  const Y=d.getUTCFullYear().toString().padStart(4,'0'),M=(d.getUTCMonth()+1).toString().padStart(2,'0'),D=d.getUTCDate().toString().padStart(2,'0');
-  const h=d.getUTCHours().toString().padStart(2,'0'),m=d.getUTCMinutes().toString().padStart(2,'0'),s=d.getUTCSeconds().toString().padStart(2,'0');
-  return `${Y}${M}${D}T${h}${m}${s}Z`;
-}
-function download(filename, text){
-  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/calendar;charset=utf-8'})); a.download=filename; a.click(); URL.revokeObjectURL(a.href);
-}
-function addMinutes(d, min){ return new Date(d.getTime() + min*60000); }
+function toICSDateUTC(d){ const Y=d.getUTCFullYear().toString().padStart(4,'0'),M=(d.getUTCMonth()+1).toString().padStart(2,'0'),D=d.getUTCDate().toString().padStart(2,'0'); const h=d.getUTCHours().toString().padStart(2,'0'),m=d.getUTCMinutes().toString().padStart(2,'0'),s=d.getUTCSeconds().toString().padStart(2,'0'); return `${Y}${M}${D}T${h}${m}${s}Z`; }
+function download(filename, text){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/calendar;charset=utf-8'})); a.download=filename; a.click(); URL.revokeObjectURL(a.href); }
+function addMinutes(d,min){ return new Date(d.getTime()+min*60000); }
 function parseDDMMYYYY(s){ const [d,m,y]=s.split('/').map(Number); return new Date(y,m-1,d); }
-function gcalAddUrl(title, startDate, endDate, desc){
-  const s=encodeURIComponent(title),d1=toICSDateUTC(startDate),d2=toICSDateUTC(endDate),de=encodeURIComponent(desc||'');
-  return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`;
-}
+function gcalAddUrl(title,startDate,endDate,desc){ const s=encodeURIComponent(title),d1=toICSDateUTC(startDate),d2=toICSDateUTC(endDate),de=encodeURIComponent(desc||''); return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`; }
 
 /* =============================
-   PDF extraction
+   Nuova estrazione: ricostruisce le righe usando le y-coordinates di pdf.js
+   Restituisce per ogni pagina un array di stringhe (righe nella stessa posizione verticale)
    ============================= */
-async function extractPagesAsText(arrayBuffer){
+async function extractPagesAsLines(arrayBuffer){
   const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
   const pdf = await loadingTask.promise;
-  const pages = [];
-  for(let p=1;p<=pdf.numPages;p++){
+  const pagesLines = [];
+  for(let p=1; p<=pdf.numPages; p++){
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
-    const pageText = content.items.map(i=>i.str).join(' ');
-    pages.push(pageText);
+    // content.items: ogni item ha .str e .transform (matrix). 
+    // La componente verticale spesso è transform[5] (y). Usiamo round per aggregare vicino valori.
+    const byY = {};
+    for(const it of content.items){
+      const txt = (it.str || '').replace(/\r?\n/g,' ').trim();
+      // find y coordinate robustly:
+      let y = null;
+      if(it.transform && it.transform.length >= 6) y = Math.round(it.transform[5]); 
+      else if(it.hasOwnProperty('y')) y = Math.round(it.y);
+      else y = 0;
+      // group by y (allow slight variations)
+      // use bucket size 2 (tolleranza)
+      const key = Math.round(y/2)*2;
+      if(!byY[key]) byY[key] = [];
+      byY[key].push(txt);
+    }
+    // order by y descending (pdf.js y bigger is up or down depending — we sort by key descending to maintain visual order)
+    const keys = Object.keys(byY).map(k=>Number(k)).sort((a,b)=>b-a);
+    const lines = keys.map(k => byY[k].join(' ').replace(/\s+/g,' ').trim()).filter(Boolean);
+    pagesLines.push(lines);
   }
-  return pages;
+  return pagesLines;
 }
-function detectWeekStart(pages){
-  for(const t of pages){
-    const m = t.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
-    if(m) return parseDDMMYYYY(m[1]);
+
+/* Rileva inizio settimana dal testo della pagina (fallback) */
+function detectWeekStartFromLines(pagesLines){
+  for(const lines of pagesLines){
+    for(const ln of lines){
+      const m = ln.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
+      if(m) return parseDDMMYYYY(m[1]);
+    }
   }
   return null;
 }
 
 /* =============================
-   CORE PARSER (modalità C)
-   - Priorità ai codici tra virgolette: /'([^']+)'/g
-   - Se non abbastanza codici, fallback a token matching SHIFT_MAP
-   - Ignora rumore e 95/96
-   - Ricava studio da STUDIO_MAP (se presente nelle vicinanze)
-   - Rileva OB\d+
+   Parser versione "riga-visiva aware" (modalità C)
+   Cerco la riga esatta che contiene il nome; su quella riga applico la logica dei 'codici' e dei token.
    ============================= */
-function parsePersonRowPerDay(pages, rawFirst, rawLast){
+function parsePersonRowPerDayFromLines(pagesLines, rawFirst, rawLast){
   const first = (rawFirst||'').toUpperCase().trim();
   const last = (rawLast||'').toUpperCase().trim();
-  // search patterns
   const searches = [];
   if(first && last){
     searches.push(`${last}, ${first}`); searches.push(`${first} ${last}`); searches.push(`${last} ${first}`);
@@ -151,136 +147,101 @@ function parsePersonRowPerDay(pages, rawFirst, rawLast){
     else searches.push(combined.toUpperCase());
   }
 
-  for(const pageText of pages){
-    const up = pageText.toUpperCase();
-    let pos = -1, foundSearch=null;
-    for(const s of searches){ pos = up.indexOf(s); if(pos !== -1){ foundSearch=s; break; } }
-    if(pos === -1) continue;
+  // Scorri pagine e righe
+  for(const lines of pagesLines){
+    for(let ri=0; ri<lines.length; ri++){
+      const line = lines[ri];
+      const up = line.toUpperCase();
+      // cerco le varianti del nome nella singola riga
+      let found = false;
+      for(const s of searches){ if(up.indexOf(s) !== -1){ found = true; break; } }
+      if(!found) continue;
 
-    // take chunk after name (sufficient long)
-    const snippet = up.slice(pos, pos + 900);
-    // 1) extract all quoted codes in order
-    const quoted = [];
-    const qRegex = /'([^']+)'/g;
-    let m;
-    while((m = qRegex.exec(snippet)) !== null){
-      if(m[1]) quoted.push(m[1].trim());
-    }
+      // abbiamo la riga corretta: prendila e anche le righe vicine (se i dati sono spezzati su più righe)
+      let context = up;
+      // includi alcune righe successive se presenti (ad es. studio o OB su riga dopo)
+      for(let k=1;k<=2 && ri + k < lines.length;k++) context += ' ' + lines[ri + k].toUpperCase();
 
-    // 2) build tokens fallback (split on whitespace/punctuation)
-    const rawTokens = snippet.split(/[\s]+/).map(t=>t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
-    // find index of name token in tokens
-    let nameIdx = rawTokens.findIndex(t => t.includes(last) || t.includes(first));
-    if(nameIdx === -1) nameIdx = 0;
-    const after = rawTokens.slice(nameIdx+1, nameIdx+300).map(t=>t.replace(/["']/g,'').trim()).filter(Boolean);
+      // Ora estrai i codici in modalità C (quoted first)
+      const perDay = [];
+      for(let i=0;i<7;i++) perDay.push({shift:null, raw:null, studio:'', ob:''});
 
-    // We'll produce perDay array of length 7
-    const perDay = []; for(let i=0;i<7;i++) perDay.push({shift:null, raw:null, studio:'', ob:''});
+      // 1) estrai sequenza di valori tra virgolette (in ordine)
+      const quoted = [];
+      const qRegex = /'([^']+)'/g;
+      let m;
+      while((m = qRegex.exec(context)) !== null){
+        if(m[1]) quoted.push(m[1].trim());
+      }
 
-    // Strategy:
-    // - first try to fill days from quoted[] in order (prefer quoted codes)
-    // - then, if some days empty, scan 'after' tokens left-to-right and fill remaining days when encountering valid shift tokens
-    // While filling we also check for nearby studio tokens and OB tokens (lookahead/backlook)
-    // We ignore tokens in IGNORED_TOKENS and numeric rest-codes.
+      // 2) tokenizzazione di fallback dalla sola context string (rimuoviamo virgolette)
+      const fallbackTokens = context.replace(/['"]/g,' ').split(/[\s]+/).map(t=>t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
 
-    // Fill from quoted
-    let qCursor = 0;
-    for(let d = 0; d < 7 && qCursor < quoted.length; d++){
-      // quoted token may contain extra, e.g. MNS'G ' -> quoted entry is G or "MNS'G " depending on extraction; we sanitize
-      let rawQ = quoted[qCursor].toUpperCase();
-      qCursor++;
-      // The quoted may include prefix like MNSG or MNS'G etc. We try to extract the LAST subcode that matches a shift or studio or OB.
-      // Split on non-alnum/*+ characters to find candidates inside quoted
-      const parts = rawQ.split(/[^A-Z0-9\*\+\s]/i).map(p => p.trim()).filter(Boolean);
-      // try from last to first to prefer the actual code at the end (e.g. "MNS'G " -> G)
-      let found = null;
-      for(let pi = parts.length-1; pi >= 0; pi--){
-        const candidate = parts[pi].replace(/\s+/g,'');
-        if(candidate === '') continue;
-        if(/^OB\d+$/i.test(candidate)){ // quoted OB (rare) -> attach as OB to current day but leave shift null
-          perDay[d].ob = candidate.toUpperCase();
-          found = null; break;
+      // Fill from quoted, left-to-right, assigning sequentialmente Lun→Dom
+      let qCursor = 0;
+      for(let d=0; d<7 && qCursor < quoted.length; d++){
+        let rawQ = quoted[qCursor++].toUpperCase();
+        // in rawQ possono esserci prefissi MNS etc; estrai candidati alfanumerici/symbol
+        const parts = rawQ.split(/[^A-Z0-9\*\+\s]/i).map(p=>p.trim()).filter(Boolean);
+        let foundShift = null;
+        for(let pi=parts.length-1; pi>=0; pi--){
+          const candidate = parts[pi].replace(/\s+/g,'').toUpperCase();
+          if(!candidate) continue;
+          if(/^OB\d+$/i.test(candidate)){ perDay[d].ob = candidate.toUpperCase(); continue; }
+          const mapped = SHIFT_MAP[candidate] || SHIFT_MAP[candidate.replace(/\s+/g,'')];
+          if(mapped){ foundShift = mapped; break; }
+          // studio?
+          if(STUDIO_MAP[candidate]) perDay[d].studio = STUDIO_MAP[candidate];
         }
-        // try exact mapping
-        const candUp = candidate.toUpperCase();
-        const mapped = SHIFT_MAP[candUp] || SHIFT_MAP[candUp.replace(/\s+/g,'')];
-        if(mapped){ found = mapped; break; }
-        // if not a shift, check studio
-        if(STUDIO_MAP[candUp]){ perDay[d].studio = STUDIO_MAP[candUp]; }
+        if(foundShift){ perDay[d].shift = foundShift; perDay[d].raw = rawQ; }
       }
-      if(found){
-        perDay[d].shift = found;
-        perDay[d].raw = rawQ;
-      } else {
-        // leave empty for now (maybe it's OB or studio), continue
-      }
-    }
 
-    /* If not all days filled, fallback scan tokens */
-    let dayCursor = 0;
-    // advance dayCursor to first empty day
-    while(dayCursor < 7 && perDay[dayCursor].shift) dayCursor++;
-    let tokenCursor = 0;
-    while(dayCursor < 7 && tokenCursor < after.length){
-      const tok = after[tokenCursor++].toUpperCase().replace(/^[,.;:]+|[,.;:]+$/g,'').trim();
-      if(!tok) continue;
-      if(IGNORED_TOKENS.has(tok)) continue;
-      if(/^OB\d+$/i.test(tok)){
-        // If OB appears and current or previous day exists, attach to nearest day that doesn't already have ob
-        // Prefer same dayCursor (if empty shift) else previous day
-        if(perDay[dayCursor] && !perDay[dayCursor].ob){ perDay[dayCursor].ob = tok; continue; }
-        if(dayCursor>0 && !perDay[dayCursor-1].ob){ perDay[dayCursor-1].ob = tok; continue; }
-        continue;
-      }
-      // studio tokens should not be treated as shift
-      const tokCollapsed = tok.replace(/\s+/g,'');
-      if(STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed]) {
-        // attach as studio to current day if no studio yet
-        const sName = STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed];
-        if(perDay[dayCursor] && !perDay[dayCursor].studio) perDay[dayCursor].studio = sName;
-        continue;
-      }
-      // try match shift key: prefer exact token then collapsed
-      let matchKey = SHIFT_MAP[tok] || SHIFT_MAP[tokCollapsed];
-      if(!matchKey){
-        // maybe token contains punctuation like MNS'G -> extract alnum/ symbols
-        const cleaned = tok.replace(/[^A-Z0-9\*\+]/g,'');
-        matchKey = SHIFT_MAP[cleaned];
-      }
-      if(matchKey){
-        perDay[dayCursor].shift = matchKey;
-        perDay[dayCursor].raw = tok;
-        // look ahead a few tokens to pick studio or OB
-        for(let la=0; la<6 && (tokenCursor+la) < after.length; la++){
-          const t2 = after[tokenCursor+la].toUpperCase().replace(/^[,.;:]+|[,.;:]+$/g,'').trim();
-          if(!t2) continue;
-          if(/^OB\d+$/i.test(t2) && !perDay[dayCursor].ob){ perDay[dayCursor].ob = t2; }
-          const t2c = t2.replace(/\s+/g,'');
-          if((!perDay[dayCursor].studio) && (STUDIO_MAP[t2] || STUDIO_MAP[t2c])) perDay[dayCursor].studio = STUDIO_MAP[t2] || STUDIO_MAP[t2c];
-          if(perDay[dayCursor].studio && perDay[dayCursor].ob) break;
+      // If some days still empty, scan fallbackTokens left-to-right after the name occurrence and fill remaining
+      let dayCursor = 0; while(dayCursor<7 && perDay[dayCursor].shift) dayCursor++;
+      for(let ti=0; ti<fallbackTokens.length && dayCursor<7; ti++){
+        const tok = fallbackTokens[ti].toUpperCase();
+        if(!tok) continue;
+        if(IGNORED_TOKENS.has(tok)) continue;
+        if(/^OB\d+$/i.test(tok)){ if(!perDay[dayCursor].ob){ perDay[dayCursor].ob = tok; continue; } if(dayCursor>0 && !perDay[dayCursor-1].ob){ perDay[dayCursor-1].ob = tok; continue; } continue; }
+        const tokCollapsed = tok.replace(/\s+/g,'');
+        // studio?
+        if(STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed]){
+          const sname = STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed];
+          if(!perDay[dayCursor].studio) perDay[dayCursor].studio = sname;
+          continue;
         }
-        dayCursor++;
-        while(dayCursor < 7 && perDay[dayCursor].shift) dayCursor++;
-      } else {
-        // not a shift, skip
+        // try shift mapping
+        let matchKey = SHIFT_MAP[tok] || SHIFT_MAP[tokCollapsed];
+        if(!matchKey){
+          const cleaned = tok.replace(/[^A-Z0-9\*\+]/g,'');
+          matchKey = SHIFT_MAP[cleaned];
+        }
+        if(matchKey){
+          perDay[dayCursor].shift = matchKey; perDay[dayCursor].raw = tok;
+          // lookahead for studio/ob in nearby tokens
+          for(let la=1; la<=6 && (ti+la) < fallbackTokens.length; la++){
+            const t2 = fallbackTokens[ti+la].toUpperCase().replace(/^[,.;:]+|[,.;:]+$/g,'').trim();
+            if(!t2) continue;
+            if(/^OB\d+$/i.test(t2) && !perDay[dayCursor].ob) perDay[dayCursor].ob = t2;
+            const t2c = t2.replace(/\s+/g,'');
+            if(!perDay[dayCursor].studio && (STUDIO_MAP[t2] || STUDIO_MAP[t2c])) perDay[dayCursor].studio = STUDIO_MAP[t2] || STUDIO_MAP[t2c];
+            if(perDay[dayCursor].studio && perDay[dayCursor].ob) break;
+          }
+          dayCursor++; while(dayCursor<7 && perDay[dayCursor].shift) dayCursor++;
+        }
       }
-    }
 
-    // Clean: ignore shift if it's 95/96 or non-mapped
-    for(let i=0;i<7;i++){
-      const s = perDay[i].shift;
-      if(!s) continue;
-      if(s === '95' || s === '96'){ perDay[i].shift = null; perDay[i].raw = null; }
-    }
+      // Clean invalid shifts (95/96)
+      for(let i=0;i<7;i++){ const s = perDay[i].shift; if(!s) continue; if(s==='95' || s==='96'){ perDay[i].shift = null; perDay[i].raw = null; } }
 
-    // If at least one shift found, return perDay
-    if(perDay.some(d => d.shift)) return perDay;
-    // else continue searching other pages
+      if(perDay.some(d=>d.shift)) return perDay;
+      // else keep cercando altre righe
+    }
   }
   return null;
 }
 
-/* Build events using canonical times */
+/* Build events e ICS (uguale a prima) */
 function buildEvents(startDate, perDay, personName){
   const evs = [];
   for(let i=0;i<7;i++){
@@ -291,7 +252,6 @@ function buildEvents(startDate, perDay, personName){
     if(!time) continue;
     if(time === "00:00-00:00") continue;
     const [s,e] = time.split('-').map(t=>t.trim());
-    if(!(s && e)) continue;
     const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
     const [sh, sm] = s.split(':').map(Number);
     const [eh, em] = e.split(':').map(Number);
@@ -309,29 +269,14 @@ function buildEvents(startDate, perDay, personName){
   }
   return evs;
 }
-
-/* ICS builder */
 function buildICS(events){
   const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Orario//v2'];
-  events.forEach((ev,i)=>{
-    lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${Date.now()}-${i}@pdf-orario`);
-    lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`);
-    lines.push(`DTSTART:${toICSDateUTC(ev.start)}`);
-    lines.push(`DTEND:${toICSDateUTC(ev.end)}`);
-    lines.push(`SUMMARY:${ev.title}`);
-    if(ev.desc) lines.push(`DESCRIPTION:${ev.desc.replace(/\n/g,'\\n')}`);
-    if(ev.location) lines.push(`LOCATION:${ev.location}`);
-    lines.push('END:VEVENT');
-  });
-  lines.push('END:VCALENDAR');
-  return lines.join('\r\n');
+  events.forEach((ev,i)=>{ lines.push('BEGIN:VEVENT'); lines.push(`UID:${Date.now()}-${i}@pdf-orario`); lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`); lines.push(`DTSTART:${toICSDateUTC(ev.start)}`); lines.push(`DTEND:${toICSDateUTC(ev.end)}`); lines.push(`SUMMARY:${ev.title}`); if(ev.desc) lines.push(`DESCRIPTION:${ev.desc.replace(/\n/g,'\\n')}`); if(ev.location) lines.push(`LOCATION:${ev.location}`); lines.push('END:VEVENT'); });
+  lines.push('END:VCALENDAR'); return lines.join('\r\n');
 }
 
-/* =============================
-   UI Flow
-   ============================= */
-let lastPages=null, lastPerDay=null, lastWeekStart=null;
+/* UI flow */
+let lastPagesLines = null, lastPerDay = null, lastWeekStart = null;
 
 document.getElementById('parseBtn').addEventListener('click', async ()=>{
   const f = document.getElementById('pdfFile').files[0];
@@ -340,16 +285,16 @@ document.getElementById('parseBtn').addEventListener('click', async ()=>{
   if(!f){ alert('Seleziona un file PDF.'); return; }
   if(!first && !last){ alert('Inserisci Nome o Cognome.'); return; }
 
-  setStatus('Lettura PDF...');
+  setStatus('Lettura PDF e ricostruzione righe (pdf.js)...');
   const ab = await f.arrayBuffer();
-  let pages = [];
-  try{ pages = await extractPagesAsText(ab); } catch(e){ console.error(e); setStatus('Errore: impossibile estrarre testo. PDF potrebbe essere scannerizzato.'); return; }
-  lastPages = pages;
-  lastWeekStart = detectWeekStart(pages);
+  let pagesLines = [];
+  try{ pagesLines = await extractPagesAsLines(ab); } catch(e){ console.error(e); setStatus('Errore: impossibile estrarre testo. PDF potrebbe essere scannerizzato.'); return; }
+  lastPagesLines = pagesLines;
+  lastWeekStart = detectWeekStartFromLines(pagesLines);
   if(!lastWeekStart) setStatus('Attenzione: header settimana non trovato (dd/mm/yyyy dd/mm/yyyy). Verrà usata la data odierna come fallback.');
 
-  setStatus('Parsing riga persona (priorità virgolette)...');
-  const perDay = parsePersonRowPerDay(pages, first, last);
+  setStatus('Parsing riga persona (modalità C, line-aware)...');
+  const perDay = parsePersonRowPerDayFromLines(pagesLines, first, last);
   lastPerDay = perDay;
   const det = document.getElementById('detected'); det.innerHTML = '';
 
@@ -370,17 +315,14 @@ document.getElementById('parseBtn').addEventListener('click', async ()=>{
   det.innerHTML = html;
 
   renderOverrideGrid(perDay);
-
   setStatus('Controlla i turni rilevati e usa la griglia per eventuali correzioni. Poi clicca "Genera Calendario (.ics)".');
   document.getElementById('buildBtn').disabled = false;
 });
 
-/* override grid */
 function renderOverrideGrid(perDay){
   const area = document.getElementById('overrideArea'); area.innerHTML = '<h3>Correzioni giornaliere (opzionali)</h3>';
   const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
-  const tbl = document.createElement('table');
-  tbl.innerHTML = `<thead><tr><th>Giorno</th><th>Turno (codice)</th><th>Studio (nome)</th><th>OB (es. OB3)</th></tr></thead>`;
+  const tbl = document.createElement('table'); tbl.innerHTML = `<thead><tr><th>Giorno</th><th>Turno (codice)</th><th>Studio (nome)</th><th>OB (es. OB3)</th></tr></thead>`;
   const tbody = document.createElement('tbody');
   for(let i=0;i<7;i++){
     const d = perDay[i] || {};
@@ -392,30 +334,23 @@ function renderOverrideGrid(perDay){
     tbody.appendChild(tr);
   }
   tbl.appendChild(tbody); area.appendChild(tbl);
-  area.appendChild(document.createElement('br'));
-  area.appendChild(document.createTextNode('Se non modifichi nulla verranno usati i valori rilevati automaticamente.'));
+  area.appendChild(document.createElement('br')); area.appendChild(document.createTextNode('Se non modifichi nulla verranno usati i valori rilevati automaticamente.'));
 }
 
-/* build */
 document.getElementById('buildBtn').addEventListener('click', ()=>{
   const first = (document.getElementById('firstName').value || '').trim();
   const last = (document.getElementById('lastName').value || '').trim();
   if(!lastPerDay){ alert('Analizza prima il PDF.'); return; }
 
-  // read overrides
   const perDay = [];
   for(let i=0;i<7;i++){
-    const s = (document.querySelector(`.override-shift[data-day="${i}"]`).value||'').trim();
-    const st = (document.querySelector(`.override-studio[data-day="${i}"]`).value||'').trim();
-    const ob = (document.querySelector(`.override-ob[data-day="${i}"]`).value||'').trim();
-    // prefer override if present
+    const s=(document.querySelector(`.override-shift[data-day="${i}"]`).value||'').trim();
+    const st=(document.querySelector(`.override-studio[data-day="${i}"]`).value||'').trim();
+    const ob=(document.querySelector(`.override-ob[data-day="${i}"]`).value||'').trim();
     if(s){
-      // validate shift: try to map to canonical; if not mapped keep as-is (but no event if not in table)
-      const norm = s.toUpperCase();
-      const coll = norm.replace(/\s+/g,'');
-      const key = SHIFT_MAP[coll] ? SHIFT_MAP[coll] : (SHIFT_MAP[norm] ? SHIFT_MAP[norm] : null);
+      const norm=s.toUpperCase(); const coll=norm.replace(/\s+/g,''); const key = SHIFT_MAP[coll] ? SHIFT_MAP[coll] : (SHIFT_MAP[norm] ? SHIFT_MAP[norm] : null);
       const shiftKey = key ? key : s;
-      perDay.push({shift: shiftKey, studio: st || '', ob: ob || ''});
+      perDay.push({shift: shiftKey, studio: st||'', ob: ob||''});
     } else {
       const base = lastPerDay[i] || {};
       perDay.push({shift: base.shift||null, studio: base.studio||'', ob: base.ob||''});
@@ -430,14 +365,8 @@ document.getElementById('buildBtn').addEventListener('click', ()=>{
   const dl = document.createElement('button'); dl.textContent = `Scarica .ics (${events.length} eventi)`; dl.onclick = ()=> download(`${(last||'utente')}_${(first||'utente')}_orario.ics`, ics);
   out.appendChild(dl);
   const list = document.createElement('div'); list.className='events';
-  events.forEach(ev=>{
-    const div=document.createElement('div'); div.className='event';
-    const s=ev.start.toLocaleString(), e=ev.end.toLocaleString();
-    div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>${ev.location? `<div class="small">Luogo: ${ev.location}</div>` : '' }<div style="margin-top:6px;"><a target="_blank" href="${gcalAddUrl(ev.title,ev.start,ev.end,ev.desc)}">Aggiungi evento singolo su Google Calendar</a></div>`;
-    list.appendChild(div);
-  });
-  out.appendChild(list);
-  setStatus(`Fatto — creati ${events.length} eventi.`);
+  events.forEach(ev=>{ const div=document.createElement('div'); div.className='event'; const s=ev.start.toLocaleString(), e=ev.end.toLocaleString(); div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>${ev.location? `<div class="small">Luogo: ${ev.location}</div>` : '' }<div style="margin-top:6px;"><a target="_blank" href="${gcalAddUrl(ev.title,ev.start,ev.end,ev.desc)}">Aggiungi evento singolo su Google Calendar</a></div>`; list.appendChild(div); });
+  out.appendChild(list); setStatus(`Fatto — creati ${events.length} eventi.`);
 });
 </script>
 </body>
