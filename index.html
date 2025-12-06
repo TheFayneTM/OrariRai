@@ -1,494 +1,545 @@
-<!doctype html>
-<html lang="it">
-<head>
-<meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PDF → Orario (.ics) — parser colonna-aware</title>
-<style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:1100px;margin:18px auto;padding:12px}
-  h1{margin:0 0 10px;font-size:1.15rem}
-  label{display:block;margin-top:10px;font-weight:600}
-  input[type=text], input[type=file], select {width:100%; padding:8px; box-sizing:border-box}
-  button{margin-top:10px;padding:10px 14px;cursor:pointer}
-  .small{font-size:0.9rem;color:#444}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  th,td{border:1px solid #ddd;padding:6px;text-align:left}
-  th{background:#f3f3f3}
-  .events{margin-top:12px}
-  .event{border:1px solid #ddd;padding:8px;margin-bottom:6px;border-radius:6px}
-  .override-grid{margin-top:12px}
-  .note{margin-top:8px;font-size:0.9rem;color:#333}
-  .flex {display:flex; gap:8px}
-  .mono {font-family:monospace; white-space:pre-wrap; word-break:break-word;}
-</style>
-</head>
-<body>
-  <h1>Convertitore PDF → Orario (.ics) — parser colonna-aware</h1>
-  <p class="small">Questo parser rileva le colonne (Lun→Dom) basandosi sulle coordinate X del PDF, dà priorità ai codici tra virgolette e ignora rumore (MNS/MFS/&gt;/95/96). Dopo l'analisi puoi correggere manualmente i giorni.</p>
+import React, { useState } from 'react';
+import { Calendar, Upload, Download, AlertCircle, CheckCircle } from 'lucide-react';
 
-  <label>File PDF</label>
-  <input id="pdfFile" type="file" accept="application/pdf" />
+const RAIScheduleConverter = () => {
+  const [file, setFile] = useState(null);
+  const [employeeName, setEmployeeName] = useState('');
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState('');
+  const [schedule, setSchedule] = useState(null);
+  const [processing, setProcessing] = useState(false);
 
-  <div class="flex" style="margin-top:8px;">
-    <div style="flex:1">
-      <label>Nome</label>
-      <input id="firstName" type="text" placeholder="es. Antonio" />
-    </div>
-    <div style="flex:1">
-      <label>Cognome</label>
-      <input id="lastName" type="text" placeholder="es. Amato" />
-    </div>
-  </div>
+  // Complete shift time mappings
+  const shiftTimes = {
+    '4o': ['05:55', '13:30'],
+    '5o': ['05:55', '14:30'],
+    '01': ['05:45', '14:20'],
+    '05': ['05:55', '14:30'],
+    '14': ['12:15', '20:50'],
+    '57': ['11:25', '19:00'],
+    '5T': ['13:00', '20:35'],
+    '1M': ['09:30', '18:05'],
+    '2E': ['11:25', '20:00'],
+    '2Q': ['14:00', '22:35'],
+    '3Z': ['07:30', '16:05'],
+    '6E': ['05:30', '13:05'],
+    '6L': ['12:00', '19:35'],
+    '7N': ['15:25', '23:00'],
+    'B1': ['05:50', '14:25'],
+    'C': ['07:00', '15:35'],
+    'C*': ['07:00', '14:35'],
+    'Ce*': ['07:00', '14:35'],
+    'D': ['08:00', '16:35'],
+    'D*': ['08:00', '15:35'],
+    'De*': ['08:00', '15:35'],
+    'E': ['08:30', '17:05'],
+    'E*': ['08:30', '16:05'],
+    'EZ': ['10:25', '19:00'],
+    'F': ['09:00', '17:35'],
+    'F*': ['09:00', '16:35'],
+    'Fe*': ['09:00', '16:35'],
+    'F0': ['08:25', '17:00'],
+    'FH': ['08:25', '16:00'],
+    'G': ['10:00', '18:35'],
+    'G*': ['10:00', '17:35'],
+    'G+': ['11:00', '18:35'],
+    'H': ['11:00', '19:30'],
+    'I': ['12:45', '21:20'],
+    'I*': ['12:45', '20:20'],
+    'L': ['13:30', '22:05'],
+    'L*': ['13:30', '21:05'],
+    'L+': ['14:30', '22:05'],
+    'M': ['15:00', '23:35'],
+    'M*': ['15:00', '22:35'],
+    'M+': ['16:00', '23:35'],
+    'N': ['15:55', '00:30'],
+    'N+': ['16:55', '00:30'],
+    'N1': ['16:25', '01:00'],
+    'O': ['16:55', '01:30'],
+    'RC': ['05:30', '14:05'],
+    'RG': ['12:00', '20:35'],
+    'RU': ['05:00', '13:35'],
+    'SR': ['10:45', '19:20'],
+    'TC': ['06:30', '15:05'],
+    'TD': ['06:30', '14:05'],
+    'UD': ['10:25', '18:00'],
+    'US': ['11:30', '19:05'],
+    'VI': ['11:30', '20:05'],
+    'XXX': ['00:00', '00:00']
+  };
 
-  <div style="margin-top:12px;">
-    <button id="parseBtn">Analizza PDF</button>
-    <button id="buildBtn" disabled>Genera Calendario (.ics)</button>
-  </div>
+  // Location mappings
+  const locations = {
+    'N1': 'Nomentano 1',
+    'N2': 'Nomentano 2',
+    'N3': 'Nomentano 3',
+    'N4': 'Nomentano 4',
+    'N5': 'Nomentano 5',
+    'N6': 'Nomentano 6',
+    'AFP1': 'Foro Italico',
+    'AFI': 'Foro Italico',
+    '1': 'Teulada 1',
+    '2': 'Teulada 2',
+    '3': 'Teulada 3',
+    '4': 'Teulada 4',
+    '5': 'Teulada 5',
+    'SR1': 'Saxa Rubra 1',
+    'SR2': 'Saxa Rubra 2',
+    'SR3': 'Saxa Rubra 3',
+    'SR4': 'Saxa Rubra 4',
+    'SR5': 'Saxa Rubra 5 - Rai Sport',
+    'RAN': 'Saxa Rubra - RAI NEWS',
+    'AUM': 'Montecitorio',
+    'DISP': 'Disposizione',
+    'Disp.': 'Disposizione',
+    'TdV': 'Teatro delle Vittorie',
+    'SE': 'Servizio Esterno',
+    'MC': 'Media Center',
+    'QUA': 'Quarantena',
+    'QUB': 'Quarantena B',
+    'SEN': 'Senato',
+    'ES06': 'Esterno 06',
+    'S9A': 'Studio 9A',
+    'S09': 'Studio 09',
+    'S12': 'Studio 12',
+    'S03': 'Studio 03',
+    'S04': 'Studio 04',
+    'S07': 'Studio 07',
+    'TG1': 'TG1',
+    'TG2': 'TG2',
+    'TG3': 'TG3'
+  };
 
-  <div id="status" class="small" style="margin-top:10px"></div>
-  <div id="detected" style="margin-top:12px"></div>
-  <div id="rawDebug" style="margin-top:12px"></div>
-  <div id="overrideArea" class="override-grid"></div>
-  <div id="output" style="margin-top:12px"></div>
-
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-<script>
-/* ---------- CONFIG ---------- */
-const RAW_SHIFTS = {
-  "4O":"05:55-13:30","5O":"05:55-14:30","14":"12:15-20:50","57":"11:25-19:00","5T":"13:00-20:35",
-  "6L":"12:00-19:35","B1":"05:50-14:25","C":"07:00-15:35","CE*":"07:00-14:35","D":"08:00-16:35",
-  "DE*":"08:00-15:35","E":"08:30-17:05","H":"11:00-19:30","EZ":"10:25-19:00","F":"09:00-17:35",
-  "FE*":"09:00-16:35","G":"10:00-18:35","G*":"10:00-17:35","G+":"11:00-18:35","I":"12:45-21:20",
-  "I* CO":"12:45-20:20","L":"13:30-22:05","L* CO":"13:30-21:05","L+":"14:30-22:05","2Q":"14:00-22:35",
-  "M":"15:00-23:35","M+":"16:00-23:35","N":"15:55-00:30","N1":"16:25-01:00","O":"16:55-01:30",
-  "RC":"05:30-14:05","RG":"12:00-20:35","SR":"10:45-19:20","TC":"06:30-15:05","UD":"10:25-18:00",
-  "US":"11:30-19:05","VI":"11:30-20:05","RU":"05:00-13:35","XXX":"00:00-00:00"
-};
-const SHIFT_TIMES = {}; const SHIFT_MAP = {};
-Object.keys(RAW_SHIFTS).forEach(k=>{ const up=k.toUpperCase(); SHIFT_TIMES[up]=RAW_SHIFTS[k]; const collapsed=up.replace(/\s+/g,''); SHIFT_MAP[collapsed]=up; SHIFT_MAP[up]=up; });
-
-const STUDIO_MAP = {
-  'N1':'Nomentano 1','N2':'Nomentano 2','N3':'Nomentano 3','N4':'Nomentano 4','N5':'Nomentano 5','N6':'Nomentano 6',
-  'AFP1':'Foro Italico','1':'Teulada 1','2':'Teulada 2','3':'Teulada 3','4':'Teulada 4','5':'Teulada 5',
-  'SR1':'Saxa Rubra 1','SR2':'Saxa Rubra 2','SR3':'Saxa Rubra 3','SR4':'Saxa Rubra 4','SR5':'Saxa Rubra 5',
-  'RAN':'Saxa Rubra (Rai News)','AUM':'Montecitorio','DISP':'Disposizione','TDV':'Teatro delle Vittorie','SE':'Servizio Esterno'
-};
-
-const IGNORED_TOKENS = new Set(['95','96','MNS','MFS','>','●','--','—']);
-
-/* ---------- UTIL ---------- */
-function setStatus(s){ document.getElementById('status').innerText = s; }
-function toICSDateUTC(d){ const Y=d.getUTCFullYear().toString().padStart(4,'0'),M=(d.getUTCMonth()+1).toString().padStart(2,'0'),D=d.getUTCDate().toString().padStart(2,'0'); const h=d.getUTCHours().toString().padStart(2,'0'),m=d.getUTCMinutes().toString().padStart(2,'0'),s=d.getUTCSeconds().toString().padStart(2,'0'); return `${Y}${M}${D}T${h}${m}${s}Z`; }
-function download(filename,text){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/calendar;charset=utf-8'})); a.download=filename; a.click(); URL.revokeObjectURL(a.href); }
-function addMinutes(d,min){ return new Date(d.getTime()+min*60000); }
-function parseDDMMYYYY(s){ const [d,m,y]=s.split('/').map(Number); return new Date(y,m-1,d); }
-function gcalAddUrl(title,startDate,endDate,desc){ const s=encodeURIComponent(title),d1=toICSDateUTC(startDate),d2=toICSDateUTC(endDate),de=encodeURIComponent(desc||''); return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`; }
-
-/* ---------- TABLE-AWARE EXTRACTION ----------
-   Build a table per page using token x and y.
-   Steps:
-    1) extract content.items with x=transform[4] and y=transform[5]
-    2) group by y (row buckets)
-    3) find header row that contains LUN/MAR/MER etc and take x positions of those tokens to be column centers
-    4) for every row assign tokens to nearest column by x
---------------------------------------------*/
-async function extractPagesAsTables(arrayBuffer){
-  const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
-  const pdf = await loadingTask.promise;
-  const pagesTables = [];
-  for(let p=1; p<=pdf.numPages; p++){
-    const page = await pdf.getPage(p);
-    const content = await page.getTextContent();
-    const items = content.items.map(it=>{
-      const txt = (it.str||'').replace(/\r?\n/g,' ').trim();
-      const tr = it.transform || [];
-      const x = tr.length>=6 ? tr[4] : (it.x || 0);
-      const y = tr.length>=6 ? tr[5] : (it.y || 0);
-      return {txt, x: Number(x), y: Number(y)};
-    }).filter(i=>i.txt);
-    // group by rounded y
-    const byY = {};
-    for(const it of items){
-      // round y to nearest integer (or bucket)
-      const key = Math.round(it.y);
-      if(!byY[key]) byY[key]=[];
-      byY[key].push(it);
+  const createEventTitle = (shift, location, obVan) => {
+    let title = shift;
+    
+    if (location && locations[location]) {
+      title += `, ${locations[location]}`;
+    } else if (location) {
+      title += `, ${location}`;
     }
-    // sort keys descending (visual order)
-    const keys = Object.keys(byY).map(k=>Number(k)).sort((a,b)=>b-a);
-    const rows = keys.map(k=>{
-      // sort tokens in row by x ascending
-      const toks = byY[k].sort((a,b)=>a.x - b.x);
-      return toks;
+    
+    if (obVan) {
+      title += `, OB${obVan}`;
+    }
+    
+    return title;
+  };
+
+  const createICSFile = (scheduleData, startDate, employeeName) => {
+    const events = [];
+    
+    scheduleData.forEach((dayData, index) => {
+      if (!dayData || !dayData.shift || dayData.shift === 'XXX' || !shiftTimes[dayData.shift]) {
+        return;
+      }
+
+      const date = new Date(startDate);
+      date.setDate(date.getDate() + index);
+      
+      const [startTime, endTime] = shiftTimes[dayData.shift];
+      const [startHour, startMin] = startTime.split(':');
+      const [endHour, endMin] = endTime.split(':');
+
+      const eventStart = new Date(date);
+      eventStart.setHours(parseInt(startHour), parseInt(startMin), 0);
+
+      const eventEnd = new Date(date);
+      eventEnd.setHours(parseInt(endHour), parseInt(endMin), 0);
+      
+      if (parseInt(endHour) < parseInt(startHour)) {
+        eventEnd.setDate(eventEnd.getDate() + 1);
+      }
+
+      const formatDate = (d) => {
+        const year = d.getUTCFullYear();
+        const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        const hours = String(d.getUTCHours()).padStart(2, '0');
+        const minutes = String(d.getUTCMinutes()).padStart(2, '0');
+        const seconds = String(d.getUTCSeconds()).padStart(2, '0');
+        return `${year}${month}${day}T${hours}${minutes}${seconds}Z`;
+      };
+
+      const title = createEventTitle(dayData.shift, dayData.location, dayData.obVan);
+      const locationText = dayData.location && locations[dayData.location] ? locations[dayData.location] : dayData.location;
+      const description = `Turno ${dayData.shift} (${startTime}-${endTime})${
+        locationText ? '\\nLuogo: ' + locationText : ''
+      }${dayData.obVan ? '\\nOB Van: ' + dayData.obVan : ''}`;
+
+      events.push({
+        start: formatDate(eventStart),
+        end: formatDate(eventEnd),
+        summary: title,
+        description: description
+      });
     });
 
-    // find header row with day names (LUN, MAR, MER, GIO, VEN, SAB, DOM)
-    const dayKeywords = ['LUN','LUN.','LUNEDÌ','LUNEDI','MAR','MAR.','MART','MER','MER.','GIO','GIO.','GIOV','VEN','VEN.','SAB','SAB.','DOM','DOM.','DOMEN'];
-    let headerRow = null;
-    let headerRowIndex = -1;
-    for(let ri=0; ri<rows.length; ri++){
-      const textAll = rows[ri].map(t=>t.txt.toUpperCase()).join(' ');
-      for(const kw of dayKeywords){
-        if(textAll.indexOf(kw) !== -1){ headerRow = rows[ri]; headerRowIndex = ri; break; }
-      }
-      if(headerRow) break;
+    const lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//RAI Schedule Converter//IT',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'X-WR-CALNAME:Turni ' + employeeName,
+      'X-WR-TIMEZONE:Europe/Rome'
+    ];
+
+    events.forEach(event => {
+      const uid = Date.now() + '-' + Math.random().toString(36).substr(2, 9);
+      lines.push('BEGIN:VEVENT');
+      lines.push('DTSTART:' + event.start);
+      lines.push('DTEND:' + event.end);
+      lines.push('SUMMARY:' + event.summary);
+      lines.push('DESCRIPTION:' + event.description);
+      lines.push('UID:' + uid + '@rai-schedule');
+      lines.push('STATUS:CONFIRMED');
+      lines.push('END:VEVENT');
+    });
+
+    lines.push('END:VCALENDAR');
+    return lines.join('\r\n');
+  };
+
+  const handleFileUpload = (e) => {
+    const uploadedFile = e.target.files[0];
+    if (!uploadedFile) return;
+
+    if (uploadedFile.type !== 'application/pdf') {
+      setError('Per favore carica un file PDF');
+      return;
     }
 
-    // column centers: if headerRow found, detect x for 7 day tokens in order by scanning header tokens that match day abbreviations
-    let colCenters = null;
-    if(headerRow){
-      const centers = [];
-      // for each header token that looks like day, push its x
-      for(const token of headerRow){
-        const t = token.txt.toUpperCase().replace(/\./g,'').replace('È','E');
-        if(/\bLUN|LUNEDI|MAR|MER|GIO|VEN|SAB|DOM/.test(t)){
-          centers.push(token.x);
+    setFile(uploadedFile);
+    setError('');
+    setStatus('');
+  };
+
+  const processSchedule = async () => {
+    if (!file || !employeeName.trim()) {
+      setError('Per favore carica un file e inserisci il nome del dipendente');
+      return;
+    }
+
+    setProcessing(true);
+    setError('');
+    setStatus('Elaborazione in corso...');
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      
+      // Convert to base64 using a more efficient method
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result;
+          const base64String = dataUrl.split(',')[1];
+          resolve(base64String);
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      
+      setStatus('Estrazione programma dal PDF...');
+      
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "document",
+                  source: {
+                    type: "base64",
+                    media_type: "application/pdf",
+                    data: base64
+                  }
+                },
+                {
+                  type: "text",
+                  text: `Cerca nel documento un dipendente il cui nome contiene le parole: "${employeeName}". Il nome può essere in formato "COGNOME, NOME" o in qualsiasi ordine. Trova la corrispondenza migliore anche se l'ordine è diverso o mancano virgole.
+
+Estrai la riga completa del suo programma per 7 giorni (lunedì-domenica).
+
+Per ogni giorno, estrai:
+1. Il codice turno (tra apici singoli come 'H', 'D', 'F*', ecc.)
+2. Il codice location che appare DOPO il codice turno (come N3, AFP1, SR4, SE, Disp., MC, ecc.)
+3. Il numero OB van se presente (da codici come OB41 estrai solo 41, da OB20 estrai 20)
+
+IMPORTANTE: I codici location possono essere:
+- Codici semplici: N3, N4, AFP1, SR4, MC, SE
+- Parole: Disp., AUM, SEN
+- Con numeri OB: OB41 significa location "OB4" e van "1"
+
+Rispondi SOLO con un JSON array di 7 oggetti:
+[{"shift":"H","location":"OB4","obVan":"1"},{"shift":"F*","location":"Disp.","obVan":""},...}]
+
+Se un giorno non ha turno: {"shift":"XXX","location":"","obVan":""}
+Se non c'è location: {"location":"","obVan":""}
+
+NON aggiungere altro testo, SOLO il JSON array.`
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      const data = await response.json();
+      
+      if (!data.content || data.content.length === 0) {
+        throw new Error('Impossibile estrarre il programma dal PDF');
+      }
+
+      let extractedText = '';
+      for (const item of data.content) {
+        if (item.type === "text") {
+          extractedText += item.text;
         }
       }
-      // if we found >=5 centers (robust), use them; else fallback to evenly spaced approach
-      if(centers.length >= 5){
-        // if more than 7, try to pick 7 by sampling; if less than 7 but >=5, will expand later
-        colCenters = centers.slice(0,7);
+
+      let jsonText = extractedText.trim();
+      jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+      
+      const scheduleData = JSON.parse(jsonText);
+      
+      if (!Array.isArray(scheduleData) || scheduleData.length !== 7) {
+        throw new Error(`Formato non valido. Trovati ${scheduleData.length} giorni invece di 7.`);
       }
+
+      const weekStart = new Date('2025-12-08');
+
+      setSchedule({ data: scheduleData, weekStart });
+      setStatus('Programma estratto con successo!');
+      setProcessing(false);
+
+    } catch (err) {
+      setError(`Errore: ${err.message}`);
+      setStatus('');
+      setProcessing(false);
     }
+  };
 
-    // fallback: compute global x positions by collecting tokens from first N rows and clustering
-    if(!colCenters){
-      // collect candidate x positions from rows (skip name column assumption)
-      const xs = [];
-      for(let ri=0; ri<Math.min(20, rows.length); ri++){
-        for(const tk of rows[ri]) xs.push(tk.x);
-      }
-      xs.sort((a,b)=>a-b);
-      // reduce to unique centers by merging close xs (tolerance 15 pts)
-      const uniq = [];
-      for(const x of xs){
-        if(uniq.length===0 || Math.abs(x - uniq[uniq.length-1]) > 15) uniq.push(x);
-      }
-      // attempt to take last 7 or slice evenly
-      if(uniq.length >= 8){
-        // likely first column is name; take last 7 as day columns
-        colCenters = uniq.slice(-7);
-      } else if(uniq.length >= 7){
-        colCenters = uniq.slice(-7);
-      } else if(uniq.length > 0){
-        // create 7 centers from min to max
-        const min = Math.min(...xs), max = Math.max(...xs);
-        const step = (max - min) / 6;
-        colCenters = Array.from({length:7}, (_,i)=>min + i*step);
-      } else {
-        // give up: create dummy spaced centers
-        colCenters = [100,200,300,400,500,600,700];
-      }
-    }
+  const downloadICS = () => {
+    if (!schedule) return;
 
-    // Now build table: for each row, create 7 columns by assigning token.txt to nearest column center
-    const table = [];
-    for(const rowTokens of rows){
-      const cells = Array.from({length:7}, ()=>[]);
-      for(const tok of rowTokens){
-        // find nearest center
-        let bestIdx = 0; let bestDist = Infinity;
-        for(let ci=0; ci<colCenters.length; ci++){
-          const d = Math.abs(tok.x - colCenters[ci]);
-          if(d < bestDist){ bestDist = d; bestIdx = ci; }
-        }
-        cells[bestIdx].push(tok.txt);
-      }
-      // join cell tokens
-      table.push(cells.map(c=>c.join(' ').trim()));
-    }
+    const icsContent = createICSFile(schedule.data, schedule.weekStart, employeeName);
+    const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `turni_${employeeName.replace(/\s+/g, '_').replace(/,/g, '')}.ics`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
-    pagesTables.push({rows: table, rawRows: rows, headerIndex: headerRowIndex, colCenters});
-  }
-  return pagesTables;
-}
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 sm:p-6">
+      <div className="max-w-4xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8 pt-8">
+          <div className="inline-flex items-center justify-center w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl mb-4 shadow-lg">
+            <Calendar className="w-8 h-8 text-white" />
+          </div>
+          <h1 className="text-4xl sm:text-5xl font-bold text-white mb-3">
+            Convertitore Turni RAI
+          </h1>
+          <p className="text-purple-200 text-lg">
+            Trasforma il tuo PDF in eventi calendario
+          </p>
+        </div>
 
-/* detect week start from table text */
-function detectWeekStartFromTables(pagesTables){
-  for(const page of pagesTables){
-    for(const row of page.rows){
-      const t = row.join(' ');
-      const m = t.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
-      if(m) return parseDDMMYYYY(m[1]);
-    }
-  }
-  return null;
-}
+        <div className="bg-white/95 backdrop-blur-lg rounded-3xl shadow-2xl p-6 sm:p-8 border border-white/20">
+          <div className="space-y-6">
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                Nome e Cognome del Dipendente
+              </label>
+              <input
+                type="text"
+                value={employeeName}
+                onChange={(e) => setEmployeeName(e.target.value)}
+                placeholder="es. Mario Rossi"
+                className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl focus:ring-2 focus:ring-purple-500 focus:border-purple-500 transition-all text-gray-800 placeholder-gray-400"
+              />
+              <p className="text-xs text-gray-500 mt-2 ml-1">
+                Puoi scrivere il nome in qualsiasi formato
+              </p>
+            </div>
 
-/* ---------- PARSING per-row: cerca riga dove colonna nome contiene il nome dato ----------
-   We will:
-    - for each page, for each table row, examine column 0..2 to find the name variants
-    - if found, we'll take that table row (and optionally adjacent rows if multi-line) and parse per-day from columns 0..6
--------------------------------------------------------------------------------------*/
-function parsePersonRowFromTable(pagesTables, rawFirst, rawLast){
-  const first = (rawFirst||'').toUpperCase().trim();
-  const last = (rawLast||'').toUpperCase().trim();
-  const searches = [];
-  if(first && last){
-    searches.push(`${last}, ${first}`);
-    searches.push(`${first} ${last}`);
-    searches.push(`${last} ${first}`);
-  } else {
-    const combined = (rawFirst + ' ' + rawLast).trim();
-    const parts = combined.split(/\s+/).map(s=>s.toUpperCase()).filter(Boolean);
-    if(parts.length>=2){
-      searches.push(`${parts[1]}, ${parts[0]}`);
-      searches.push(`${parts[0]} ${parts[1]}`);
-      searches.push(`${parts[1]} ${parts[0]}`);
-    } else searches.push(combined.toUpperCase());
-  }
+            <div>
+              <label className="block text-sm font-semibold text-gray-700 mb-2">
+                File PDF del Programma
+              </label>
+              <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-purple-500 hover:bg-purple-50/50 transition-all cursor-pointer group">
+                <input
+                  type="file"
+                  accept=".pdf"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                  id="file-upload"
+                />
+                <label
+                  htmlFor="file-upload"
+                  className="cursor-pointer flex flex-col items-center"
+                >
+                  <div className="w-16 h-16 bg-gradient-to-br from-purple-100 to-blue-100 rounded-2xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
+                    <Upload className="w-8 h-8 text-purple-600" />
+                  </div>
+                  <span className="text-sm font-medium text-gray-700">
+                    {file ? (
+                      <span className="text-purple-600">{file.name}</span>
+                    ) : (
+                      'Clicca per caricare il PDF'
+                    )}
+                  </span>
+                  {!file && (
+                    <span className="text-xs text-gray-400 mt-1">
+                      o trascina qui il file
+                    </span>
+                  )}
+                </label>
+              </div>
+            </div>
 
-  for(const page of pagesTables){
-    const table = page.rows; // array of rows, each row is array[7] cells
-    for(let ri=0; ri<table.length; ri++){
-      const row = table[ri];
-      // check candidate name columns: often name in first 1-3 columns; build combined first3
-      const first3 = (row[0] || '') + ' ' + (row[1] || '') + ' ' + (row[2] || '');
-      const first3Up = first3.toUpperCase();
-      let found = false;
-      for(const s of searches){ if(first3Up.indexOf(s) !== -1){ found = true; break; } }
-      if(!found) continue;
-      // we found candidate row: now read columns Lun..Dom which are likely at indices near end.
-      // We expect 7 day columns; but name may be in col0 and days in col1..7 or col0..6 depending on layout.
-      // Strategy: try different offsets to align days: for offset in 0..3 assume days are row[offset..offset+6]
-      for(let offset=0; offset<=3; offset++){
-        const cand = [];
-        for(let d=0; d<7; d++) cand.push(row[offset + d] || '');
-        // check how many of cand tokens contain shift-like patterns or quotes
-        const score = cand.reduce((acc,cell)=> {
-          const u = (cell||'').toUpperCase();
-          if(u.match(/'[^']+'/) || u.match(/^[A-Z0-9\*\+\s]+$/)) return acc+1;
-          return acc;
-        }, 0);
-        // accept if at least 2 non-empty (heuristic)
-        if(score >= 2){
-          // parse these 7 cells into perDay entries
-          const perDay = [];
-          for(let d=0; d<7; d++){
-            const cellText = (row[offset + d] || '').trim();
-            perDay.push(parseCellToDay(cellText));
-          }
-          // If at least one shift found, return
-          if(perDay.some(dt => dt.shift)) return perDay;
-        }
-      }
-      // if none offsets worked, still attempt parsing last 7 columns as days
-      const last7 = table[ri].slice(-7);
-      const pd = last7.map(parseCellToDay);
-      if(pd.some(dt=>dt.shift)) return pd;
-    }
-  }
-  return null;
-}
+            <button
+              onClick={processSchedule}
+              disabled={!file || !employeeName || processing}
+              className="w-full bg-gradient-to-r from-purple-600 to-blue-600 text-white py-4 rounded-xl font-semibold text-lg hover:from-purple-700 hover:to-blue-700 disabled:from-gray-300 disabled:to-gray-400 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 disabled:transform-none"
+            >
+              {processing ? (
+                <span className="flex items-center justify-center gap-2">
+                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                  Elaborazione in corso...
+                </span>
+              ) : (
+                'Elabora Programma'
+              )}
+            </button>
 
-/* parse single cell content into {shift, raw, studio, ob}
-   rules:
-    - prefer codes between quotes: /'([^']+)'/
-    - if inside quotes extract candidates (possibly MNS'G -> 'G')
-    - fallback: try to match token against SHIFT_MAP
-    - detect OB\d+ and STUDIO_MAP in cell text
-*/
-function parseCellToDay(cellText){
-  const ret = {shift:null, raw:null, studio:'', ob:''};
-  if(!cellText) return ret;
-  const up = cellText.toUpperCase();
-  // extract quoted first
-  const q = [...up.matchAll(/'([^']+)'/g)].map(m=>m[1].trim());
-  if(q.length>0){
-    // try from last part to find shift
-    for(const rawQ of q){
-      const parts = rawQ.split(/[^A-Z0-9\*\+\s]/i).map(p=>p.trim()).filter(Boolean);
-      for(let pi=parts.length-1; pi>=0; pi--){
-        const cand = parts[pi].replace(/\s+/g,'').toUpperCase();
-        if(!cand) continue;
-        if(/^OB\d+$/i.test(cand)){ ret.ob = cand; continue; }
-        const mapped = SHIFT_MAP[cand] || SHIFT_MAP[cand.replace(/\s+/g,'')];
-        if(mapped){ ret.shift = mapped; ret.raw = rawQ; break; }
-        if(STUDIO_MAP[cand]) ret.studio = STUDIO_MAP[cand];
-      }
-      if(ret.shift) break;
-    }
-    // if found shift return (we still try to find studio/ob in whole cell)
-    if(ret.shift){
-      // find studio anywhere in cell
-      for(const key of Object.keys(STUDIO_MAP)){
-        if(up.indexOf(key) !== -1 || up.indexOf(STUDIO_MAP[key].toUpperCase()) !== -1){
-          ret.studio = STUDIO_MAP[key]; break;
-        }
-      }
-      // find OB
-      const obm = up.match(/OB\d+/i);
-      if(obm) ret.ob = obm[0].toUpperCase();
-      return ret;
-    }
-  }
+            {status && (
+              <div className="flex items-center gap-3 p-4 bg-gradient-to-r from-green-50 to-emerald-50 border-2 border-green-200 rounded-xl">
+                <div className="w-10 h-10 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0">
+                  <CheckCircle className="w-6 h-6 text-white" />
+                </div>
+                <span className="text-green-800 font-medium">{status}</span>
+              </div>
+            )}
 
-  // fallback: find shift tokens in the cell by scanning tokens left->right
-  const tokens = up.split(/[\s,;:\/]+/).map(t=>t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
-  for(const tok of tokens){
-    if(IGNORED_TOKENS.has(tok)) continue;
-    if(/^OB\d+$/i.test(tok)){ ret.ob = tok; continue; }
-    // studio?
-    const collapsed = tok.replace(/\s+/g,'');
-    if(STUDIO_MAP[tok] || STUDIO_MAP[collapsed]){ ret.studio = STUDIO_MAP[tok] || STUDIO_MAP[collapsed]; continue; }
-    // try shift match
-    let mapped = SHIFT_MAP[tok] || SHIFT_MAP[collapsed];
-    if(!mapped){
-      const cleaned = tok.replace(/[^A-Z0-9\*\+]/g,'');
-      mapped = SHIFT_MAP[cleaned];
-    }
-    if(mapped){ ret.shift = mapped; ret.raw = tok; break; }
-  }
+            {error && (
+              <div className="flex items-center gap-3 p-4 bg-gradient-to-r from-red-50 to-rose-50 border-2 border-red-200 rounded-xl">
+                <div className="w-10 h-10 bg-red-500 rounded-full flex items-center justify-center flex-shrink-0">
+                  <AlertCircle className="w-6 h-6 text-white" />
+                </div>
+                <span className="text-red-800 font-medium">{error}</span>
+              </div>
+            )}
 
-  // ensure 95/96 not taken as shift
-  if(ret.shift && (ret.shift === '95' || ret.shift === '96')){ ret.shift = null; ret.raw = null; }
+            {schedule && (
+              <div className="border-2 border-purple-200 rounded-2xl p-6 bg-gradient-to-br from-purple-50 to-blue-50">
+                <h3 className="font-bold text-xl text-gray-800 mb-4">
+                  Programma Estratto
+                </h3>
+                <div className="space-y-3 mb-6">
+                  {['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'].map((day, i) => {
+                    const dayData = schedule.data[i];
+                    if (!dayData || dayData.shift === 'XXX') {
+                      return (
+                        <div key={day} className="flex items-center justify-between p-4 bg-white rounded-xl shadow-sm border border-gray-100">
+                          <span className="font-semibold text-gray-700">{day}</span>
+                          <span className="text-gray-400 text-sm">Riposo</span>
+                        </div>
+                      );
+                    }
+                    
+                    const times = shiftTimes[dayData.shift] || ['--:--', '--:--'];
+                    const title = createEventTitle(dayData.shift, dayData.location, dayData.obVan);
+                    
+                    return (
+                      <div key={day} className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-500 to-blue-500 rounded-xl shadow-md text-white">
+                        <div className="flex-1">
+                          <div className="font-bold text-sm opacity-90 mb-1">{day}</div>
+                          <div className="text-sm font-semibold">{title}</div>
+                        </div>
+                        <div className="text-right ml-4">
+                          <div className="text-sm font-bold bg-white/20 px-3 py-1 rounded-lg backdrop-blur-sm">
+                            {times[0]} - {times[1]}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button
+                  onClick={downloadICS}
+                  className="w-full bg-gradient-to-r from-green-500 to-emerald-600 text-white py-4 rounded-xl font-bold text-lg hover:from-green-600 hover:to-emerald-700 flex items-center justify-center gap-3 shadow-lg hover:shadow-xl transition-all transform hover:-translate-y-0.5"
+                >
+                  <Download className="w-6 h-6" />
+                  Scarica File Calendario (.ics)
+                </button>
+                <p className="text-xs text-center text-gray-500 mt-3">
+                  Compatibile con Google Calendar, Apple Calendar, Outlook e altri
+                </p>
+              </div>
+            )}
+          </div>
 
-  return ret;
-}
+          <div className="mt-8 p-6 bg-gradient-to-br from-gray-50 to-gray-100 rounded-2xl border border-gray-200">
+            <h3 className="font-bold text-gray-800 mb-3 text-lg">Come usare</h3>
+            <ol className="text-sm text-gray-600 space-y-2 ml-5">
+              <li className="flex items-start gap-2">
+                <span className="font-bold text-purple-600 min-w-[1.5rem]">1.</span>
+                <span>Scrivi il nome del dipendente in qualsiasi formato</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="font-bold text-purple-600 min-w-[1.5rem]">2.</span>
+                <span>Carica il file PDF del programma settimanale</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="font-bold text-purple-600 min-w-[1.5rem]">3.</span>
+                <span>Clicca su "Elabora Programma"</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="font-bold text-purple-600 min-w-[1.5rem]">4.</span>
+                <span>Controlla il programma estratto</span>
+              </li>
+              <li className="flex items-start gap-2">
+                <span className="font-bold text-purple-600 min-w-[1.5rem]">5.</span>
+                <span>Scarica il file e importalo nella tua app calendario preferita</span>
+              </li>
+            </ol>
+            <div className="mt-4 p-4 bg-white rounded-xl border border-purple-200">
+              <p className="font-semibold text-gray-700 mb-2 text-sm">Il file includerà</p>
+              <ul className="text-xs text-gray-600 space-y-1.5 ml-4">
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-purple-500 rounded-full"></span>
+                  Codice turno e orari precisi
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-purple-500 rounded-full"></span>
+                  Nome della location (es. Nomentano 3, Foro Italico)
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 bg-purple-500 rounded-full"></span>
+                  Numero OB van se applicabile
+                </li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-/* build events + ics */
-function buildEvents(startDate, perDay, personName){
-  const evs = [];
-  for(let i=0;i<7;i++){
-    const d = perDay[i] || {};
-    if(!d.shift) continue;
-    const key = d.shift.toUpperCase();
-    const time = SHIFT_TIMES[key];
-    if(!time) continue;
-    if(time === "00:00-00:00") continue;
-    const [s,e] = time.split('-').map(t=>t.trim());
-    const day = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + i);
-    const [sh, sm] = s.split(':').map(Number);
-    const [eh, em] = e.split(':').map(Number);
-    const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), sh, sm);
-    let end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), eh, em);
-    if(end <= start) end = addMinutes(end, 24*60);
-    const studioName = d.studio || (STUDIO_MAP[d.shift] || '') || '';
-    const ob = d.ob || '';
-    const parts = [d.shift];
-    if(studioName) parts.push(studioName);
-    if(ob) parts.push(ob.toUpperCase());
-    const title = parts.join(' — ');
-    const desc = `Turno: ${d.shift}\nOrario: ${s} - ${e}${studioName?`\nStudio: ${studioName}`:''}${ob?`\nOB: ${ob}`:''}`;
-    evs.push({title, start, end, desc, location: studioName});
-  }
-  return evs;
-}
-function buildICS(events){
-  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Orario//v3'];
-  events.forEach((ev,i)=>{ lines.push('BEGIN:VEVENT'); lines.push(`UID:${Date.now()}-${i}@pdf-orario`); lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`); lines.push(`DTSTART:${toICSDateUTC(ev.start)}`); lines.push(`DTEND:${toICSDateUTC(ev.end)}`); lines.push(`SUMMARY:${ev.title}`); if(ev.desc) lines.push(`DESCRIPTION:${ev.desc.replace(/\n/g,'\\n')}`); if(ev.location) lines.push(`LOCATION:${ev.location}`); lines.push('END:VEVENT'); });
-  lines.push('END:VCALENDAR'); return lines.join('\r\n');
-}
-
-/* ---------- UI flow ---------- */
-let lastPagesTables = null, lastPerDay = null, lastWeekStart = null;
-
-document.getElementById('parseBtn').addEventListener('click', async ()=>{
-  const f = document.getElementById('pdfFile').files[0];
-  const first = (document.getElementById('firstName').value || '').trim();
-  const last = (document.getElementById('lastName').value || '').trim();
-  if(!f){ alert('Seleziona un file PDF.'); return; }
-  if(!first && !last){ alert('Inserisci Nome o Cognome.'); return; }
-
-  setStatus('Estrazione PDF e costruzione tabella (pdf.js)...');
-  const ab = await f.arrayBuffer();
-  let pagesTables = [];
-  try{ pagesTables = await extractPagesAsTables(ab); } catch(e){ console.error(e); setStatus('Errore estrazione PDF: probabilmente il file è scannerizzato.'); return; }
-  lastPagesTables = pagesTables;
-  lastWeekStart = detectWeekStartFromTables(pagesTables);
-  if(!lastWeekStart) setStatus('Header settimana non trovato; verrà usata la data odierna come fallback.');
-
-  setStatus('Ricerca riga persona nelle tabelle (Lun→Dom) ...');
-  const perDay = parsePersonRowFromTable(pagesTables, first, last);
-  lastPerDay = perDay;
-  const det = document.getElementById('detected'); det.innerHTML = ''; document.getElementById('rawDebug').innerHTML='';
-
-  if(!perDay){ setStatus('Riga persona non trovata. Prova "COGNOME, NOME" o verifica che il PDF abbia testo selezionabile.'); document.getElementById('buildBtn').disabled = true; return; }
-
-  // mostra risultati
-  const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
-  let html = `<h3>Turni rilevati (Lun→Dom)</h3><table><thead><tr><th>Giorno</th><th>Turno</th><th>Studio</th><th>OB</th><th>Orario canonico</th></tr></thead><tbody>`;
-  for(let i=0;i<7;i++){
-    const d = perDay[i] || {};
-    const key = d.shift ? d.shift.toUpperCase() : '';
-    const collapsed = key.replace(/\s+/g,'');
-    const mapped = SHIFT_MAP[collapsed] ? SHIFT_MAP[collapsed] : (SHIFT_MAP[key] ? SHIFT_MAP[key] : null);
-    const time = mapped ? (SHIFT_TIMES[mapped] || '') : '';
-    html += `<tr><td>${dayNamesIT[i]}</td><td>${d.shift||''}</td><td>${d.studio||''}</td><td>${d.ob||''}</td><td>${time}</td></tr>`;
-  }
-  html += '</tbody></table>';
-  det.innerHTML = html;
-
-  // debug: show header x centers for first page
-  try {
-    const dbg = document.getElementById('rawDebug');
-    const page0 = pagesTables[0];
-    let dbgHtml = '<div class="mono"><strong>ColCenters (prima pagina):</strong> ' + (page0? (page0.colCenters||[]).map(x=>Math.round(x)).join(', '):'n/a') + '</div>';
-    dbgHtml += '<div class="mono"><strong>Righe (prima pagina) sample:</strong>\n';
-    if(page0){
-      for(let i=0;i<Math.min(8, page0.rows.length); i++){
-        dbgHtml += JSON.stringify(page0.rows[i]) + '\n';
-      }
-    }
-    dbgHtml += '</div>';
-    dbg.innerHTML = dbgHtml;
-  } catch(e){ /* ignore */ }
-
-  renderOverrideGrid(perDay);
-  setStatus('Controlla i turni rilevati e usa la griglia per eventuali correzioni. Poi clicca "Genera Calendario (.ics)".');
-  document.getElementById('buildBtn').disabled = false;
-});
-
-function renderOverrideGrid(perDay){
-  const area = document.getElementById('overrideArea'); area.innerHTML = '<h3>Correzioni giornaliere (opzionali)</h3>';
-  const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
-  const tbl = document.createElement('table'); tbl.innerHTML = `<thead><tr><th>Giorno</th><th>Turno (codice)</th><th>Studio (nome)</th><th>OB (es. OB3)</th></tr></thead>`;
-  const tbody = document.createElement('tbody');
-  for(let i=0;i<7;i++){
-    const d = perDay[i] || {};
-    const tr = document.createElement('tr');
-    tr.innerHTML = `<td style="width:70px">${dayNamesIT[i]}</td>
-      <td><input data-day="${i}" class="override-shift" value="${d.shift||''}" placeholder="Es. 2Q" /></td>
-      <td><input data-day="${i}" class="override-studio" value="${d.studio||''}" placeholder="Es. Nomentano 4" /></td>
-      <td><input data-day="${i}" class="override-ob" value="${d.ob||''}" placeholder="Es. OB3" /></td>`;
-    tbody.appendChild(tr);
-  }
-  tbl.appendChild(tbody); area.appendChild(tbl);
-  area.appendChild(document.createElement('br')); area.appendChild(document.createTextNode('Se non modifichi nulla verranno usati i valori rilevati automaticamente.'));
-}
-
-document.getElementById('buildBtn').addEventListener('click', ()=>{
-  const first = (document.getElementById('firstName').value || '').trim();
-  const last = (document.getElementById('lastName').value || '').trim();
-  if(!lastPerDay){ alert('Analizza prima il PDF.'); return; }
-
-  const perDay = [];
-  for(let i=0;i<7;i++){
-    const s=(document.querySelector(`.override-shift[data-day="${i}"]`).value||'').trim();
-    const st=(document.querySelector(`.override-studio[data-day="${i}"]`).value||'').trim();
-    const ob=(document.querySelector(`.override-ob[data-day="${i}"]`).value||'').trim();
-    if(s){
-      const norm=s.toUpperCase(); const coll=norm.replace(/\s+/g,''); const key = SHIFT_MAP[coll] ? SHIFT_MAP[coll] : (SHIFT_MAP[norm] ? SHIFT_MAP[norm] : null);
-      const shiftKey = key ? key : s;
-      perDay.push({shift: shiftKey, studio: st||'', ob: ob||''});
-    } else {
-      const base = lastPerDay[i] || {};
-      perDay.push({shift: base.shift||null, studio: base.studio||'', ob: base.ob||''});
-    }
-  }
-
-  const start = lastWeekStart || new Date();
-  const events = buildEvents(start, perDay, `${first} ${last}`);
-  if(events.length === 0){ setStatus('Nessun evento creato (forse tutti OFF/XXX o codici non validi).'); return; }
-  const ics = buildICS(events);
-  const out = document.getElementById('output'); out.innerHTML = '';
-  const dl = document.createElement('button'); dl.textContent = `Scarica .ics (${events.length} eventi)`; dl.onclick = ()=> download(`${(last||'utente')}_${(first||'utente')}_orario.ics`, ics);
-  out.appendChild(dl);
-  const list = document.createElement('div'); list.className='events';
-  events.forEach(ev=>{ const div=document.createElement('div'); div.className='event'; const s=ev.start.toLocaleString(), e=ev.end.toLocaleString(); div.innerHTML = `<strong>${ev.title}</strong><div class="small">${s} — ${e}</div>${ev.location? `<div class="small">Luogo: ${ev.location}</div>` : '' }<div style="margin-top:6px;"><a target="_blank" href="${gcalAddUrl(ev.title,ev.start,ev.end,ev.desc)}">Aggiungi evento singolo su Google Calendar</a></div>`; list.appendChild(div); });
-  out.appendChild(list); setStatus(`Fatto — creati ${events.length} eventi.`);
-});
-</script>
-</body>
-</html>
+export default RAIScheduleConverter;
