@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>PDF → Orario (.ics) — parser definitivo (line-aware)</title>
+<title>PDF → Orario (.ics) — parser colonna-aware</title>
 <style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:1000px;margin:18px auto;padding:12px}
-  h1{margin:0 0 10px;font-size:1.1rem}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;max-width:1100px;margin:18px auto;padding:12px}
+  h1{margin:0 0 10px;font-size:1.15rem}
   label{display:block;margin-top:10px;font-weight:600}
   input[type=text], input[type=file], select {width:100%; padding:8px; box-sizing:border-box}
   button{margin-top:10px;padding:10px 14px;cursor:pointer}
@@ -19,11 +19,12 @@
   .override-grid{margin-top:12px}
   .note{margin-top:8px;font-size:0.9rem;color:#333}
   .flex {display:flex; gap:8px}
+  .mono {font-family:monospace; white-space:pre-wrap; word-break:break-word;}
 </style>
 </head>
 <body>
-  <h1>Convertitore PDF → Orario (.ics) — parser definitivo (line-aware)</h1>
-  <p class="small">Priorità ai codici tra virgolette, fallback a codici non tra virgolette; ignorati rumori (MNS, MFS, &gt;, 95/96). Ora il parser ricostruisce le righe visive dal PDF per assegnare correttamente la riga al dipendente.</p>
+  <h1>Convertitore PDF → Orario (.ics) — parser colonna-aware</h1>
+  <p class="small">Questo parser rileva le colonne (Lun→Dom) basandosi sulle coordinate X del PDF, dà priorità ai codici tra virgolette e ignora rumore (MNS/MFS/&gt;/95/96). Dopo l'analisi puoi correggere manualmente i giorni.</p>
 
   <label>File PDF</label>
   <input id="pdfFile" type="file" accept="application/pdf" />
@@ -46,14 +47,13 @@
 
   <div id="status" class="small" style="margin-top:10px"></div>
   <div id="detected" style="margin-top:12px"></div>
+  <div id="rawDebug" style="margin-top:12px"></div>
   <div id="overrideArea" class="override-grid"></div>
   <div id="output" style="margin-top:12px"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script>
-/* =============================
-   CONFIGURAZIONE: TURNI CANONICI
-   ============================= */
+/* ---------- CONFIG ---------- */
 const RAW_SHIFTS = {
   "4O":"05:55-13:30","5O":"05:55-14:30","14":"12:15-20:50","57":"11:25-19:00","5T":"13:00-20:35",
   "6L":"12:00-19:35","B1":"05:50-14:25","C":"07:00-15:35","CE*":"07:00-14:35","D":"08:00-16:35",
@@ -76,172 +76,278 @@ const STUDIO_MAP = {
 
 const IGNORED_TOKENS = new Set(['95','96','MNS','MFS','>','●','--','—']);
 
-/* Utilities */
+/* ---------- UTIL ---------- */
 function setStatus(s){ document.getElementById('status').innerText = s; }
 function toICSDateUTC(d){ const Y=d.getUTCFullYear().toString().padStart(4,'0'),M=(d.getUTCMonth()+1).toString().padStart(2,'0'),D=d.getUTCDate().toString().padStart(2,'0'); const h=d.getUTCHours().toString().padStart(2,'0'),m=d.getUTCMinutes().toString().padStart(2,'0'),s=d.getUTCSeconds().toString().padStart(2,'0'); return `${Y}${M}${D}T${h}${m}${s}Z`; }
-function download(filename, text){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/calendar;charset=utf-8'})); a.download=filename; a.click(); URL.revokeObjectURL(a.href); }
+function download(filename,text){ const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([text],{type:'text/calendar;charset=utf-8'})); a.download=filename; a.click(); URL.revokeObjectURL(a.href); }
 function addMinutes(d,min){ return new Date(d.getTime()+min*60000); }
 function parseDDMMYYYY(s){ const [d,m,y]=s.split('/').map(Number); return new Date(y,m-1,d); }
 function gcalAddUrl(title,startDate,endDate,desc){ const s=encodeURIComponent(title),d1=toICSDateUTC(startDate),d2=toICSDateUTC(endDate),de=encodeURIComponent(desc||''); return `https://www.google.com/calendar/render?action=TEMPLATE&text=${s}&dates=${d1}/${d2}&details=${de}&ctz=${Intl.DateTimeFormat().resolvedOptions().timeZone}`; }
 
-/* =============================
-   Nuova estrazione: ricostruisce le righe usando le y-coordinates di pdf.js
-   Restituisce per ogni pagina un array di stringhe (righe nella stessa posizione verticale)
-   ============================= */
-async function extractPagesAsLines(arrayBuffer){
+/* ---------- TABLE-AWARE EXTRACTION ----------
+   Build a table per page using token x and y.
+   Steps:
+    1) extract content.items with x=transform[4] and y=transform[5]
+    2) group by y (row buckets)
+    3) find header row that contains LUN/MAR/MER etc and take x positions of those tokens to be column centers
+    4) for every row assign tokens to nearest column by x
+--------------------------------------------*/
+async function extractPagesAsTables(arrayBuffer){
   const loadingTask = pdfjsLib.getDocument({data: arrayBuffer});
   const pdf = await loadingTask.promise;
-  const pagesLines = [];
+  const pagesTables = [];
   for(let p=1; p<=pdf.numPages; p++){
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
-    // content.items: ogni item ha .str e .transform (matrix). 
-    // La componente verticale spesso è transform[5] (y). Usiamo round per aggregare vicino valori.
+    const items = content.items.map(it=>{
+      const txt = (it.str||'').replace(/\r?\n/g,' ').trim();
+      const tr = it.transform || [];
+      const x = tr.length>=6 ? tr[4] : (it.x || 0);
+      const y = tr.length>=6 ? tr[5] : (it.y || 0);
+      return {txt, x: Number(x), y: Number(y)};
+    }).filter(i=>i.txt);
+    // group by rounded y
     const byY = {};
-    for(const it of content.items){
-      const txt = (it.str || '').replace(/\r?\n/g,' ').trim();
-      // find y coordinate robustly:
-      let y = null;
-      if(it.transform && it.transform.length >= 6) y = Math.round(it.transform[5]); 
-      else if(it.hasOwnProperty('y')) y = Math.round(it.y);
-      else y = 0;
-      // group by y (allow slight variations)
-      // use bucket size 2 (tolleranza)
-      const key = Math.round(y/2)*2;
-      if(!byY[key]) byY[key] = [];
-      byY[key].push(txt);
+    for(const it of items){
+      // round y to nearest integer (or bucket)
+      const key = Math.round(it.y);
+      if(!byY[key]) byY[key]=[];
+      byY[key].push(it);
     }
-    // order by y descending (pdf.js y bigger is up or down depending — we sort by key descending to maintain visual order)
+    // sort keys descending (visual order)
     const keys = Object.keys(byY).map(k=>Number(k)).sort((a,b)=>b-a);
-    const lines = keys.map(k => byY[k].join(' ').replace(/\s+/g,' ').trim()).filter(Boolean);
-    pagesLines.push(lines);
+    const rows = keys.map(k=>{
+      // sort tokens in row by x ascending
+      const toks = byY[k].sort((a,b)=>a.x - b.x);
+      return toks;
+    });
+
+    // find header row with day names (LUN, MAR, MER, GIO, VEN, SAB, DOM)
+    const dayKeywords = ['LUN','LUN.','LUNEDÌ','LUNEDI','MAR','MAR.','MART','MER','MER.','GIO','GIO.','GIOV','VEN','VEN.','SAB','SAB.','DOM','DOM.','DOMEN'];
+    let headerRow = null;
+    let headerRowIndex = -1;
+    for(let ri=0; ri<rows.length; ri++){
+      const textAll = rows[ri].map(t=>t.txt.toUpperCase()).join(' ');
+      for(const kw of dayKeywords){
+        if(textAll.indexOf(kw) !== -1){ headerRow = rows[ri]; headerRowIndex = ri; break; }
+      }
+      if(headerRow) break;
+    }
+
+    // column centers: if headerRow found, detect x for 7 day tokens in order by scanning header tokens that match day abbreviations
+    let colCenters = null;
+    if(headerRow){
+      const centers = [];
+      // for each header token that looks like day, push its x
+      for(const token of headerRow){
+        const t = token.txt.toUpperCase().replace(/\./g,'').replace('È','E');
+        if(/\bLUN|LUNEDI|MAR|MER|GIO|VEN|SAB|DOM/.test(t)){
+          centers.push(token.x);
+        }
+      }
+      // if we found >=5 centers (robust), use them; else fallback to evenly spaced approach
+      if(centers.length >= 5){
+        // if more than 7, try to pick 7 by sampling; if less than 7 but >=5, will expand later
+        colCenters = centers.slice(0,7);
+      }
+    }
+
+    // fallback: compute global x positions by collecting tokens from first N rows and clustering
+    if(!colCenters){
+      // collect candidate x positions from rows (skip name column assumption)
+      const xs = [];
+      for(let ri=0; ri<Math.min(20, rows.length); ri++){
+        for(const tk of rows[ri]) xs.push(tk.x);
+      }
+      xs.sort((a,b)=>a-b);
+      // reduce to unique centers by merging close xs (tolerance 15 pts)
+      const uniq = [];
+      for(const x of xs){
+        if(uniq.length===0 || Math.abs(x - uniq[uniq.length-1]) > 15) uniq.push(x);
+      }
+      // attempt to take last 7 or slice evenly
+      if(uniq.length >= 8){
+        // likely first column is name; take last 7 as day columns
+        colCenters = uniq.slice(-7);
+      } else if(uniq.length >= 7){
+        colCenters = uniq.slice(-7);
+      } else if(uniq.length > 0){
+        // create 7 centers from min to max
+        const min = Math.min(...xs), max = Math.max(...xs);
+        const step = (max - min) / 6;
+        colCenters = Array.from({length:7}, (_,i)=>min + i*step);
+      } else {
+        // give up: create dummy spaced centers
+        colCenters = [100,200,300,400,500,600,700];
+      }
+    }
+
+    // Now build table: for each row, create 7 columns by assigning token.txt to nearest column center
+    const table = [];
+    for(const rowTokens of rows){
+      const cells = Array.from({length:7}, ()=>[]);
+      for(const tok of rowTokens){
+        // find nearest center
+        let bestIdx = 0; let bestDist = Infinity;
+        for(let ci=0; ci<colCenters.length; ci++){
+          const d = Math.abs(tok.x - colCenters[ci]);
+          if(d < bestDist){ bestDist = d; bestIdx = ci; }
+        }
+        cells[bestIdx].push(tok.txt);
+      }
+      // join cell tokens
+      table.push(cells.map(c=>c.join(' ').trim()));
+    }
+
+    pagesTables.push({rows: table, rawRows: rows, headerIndex: headerRowIndex, colCenters});
   }
-  return pagesLines;
+  return pagesTables;
 }
 
-/* Rileva inizio settimana dal testo della pagina (fallback) */
-function detectWeekStartFromLines(pagesLines){
-  for(const lines of pagesLines){
-    for(const ln of lines){
-      const m = ln.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
+/* detect week start from table text */
+function detectWeekStartFromTables(pagesTables){
+  for(const page of pagesTables){
+    for(const row of page.rows){
+      const t = row.join(' ');
+      const m = t.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{2}\/\d{2}\/\d{4})/);
       if(m) return parseDDMMYYYY(m[1]);
     }
   }
   return null;
 }
 
-/* =============================
-   Parser versione "riga-visiva aware" (modalità C)
-   Cerco la riga esatta che contiene il nome; su quella riga applico la logica dei 'codici' e dei token.
-   ============================= */
-function parsePersonRowPerDayFromLines(pagesLines, rawFirst, rawLast){
+/* ---------- PARSING per-row: cerca riga dove colonna nome contiene il nome dato ----------
+   We will:
+    - for each page, for each table row, examine column 0..2 to find the name variants
+    - if found, we'll take that table row (and optionally adjacent rows if multi-line) and parse per-day from columns 0..6
+-------------------------------------------------------------------------------------*/
+function parsePersonRowFromTable(pagesTables, rawFirst, rawLast){
   const first = (rawFirst||'').toUpperCase().trim();
   const last = (rawLast||'').toUpperCase().trim();
   const searches = [];
   if(first && last){
-    searches.push(`${last}, ${first}`); searches.push(`${first} ${last}`); searches.push(`${last} ${first}`);
+    searches.push(`${last}, ${first}`);
+    searches.push(`${first} ${last}`);
+    searches.push(`${last} ${first}`);
   } else {
     const combined = (rawFirst + ' ' + rawLast).trim();
     const parts = combined.split(/\s+/).map(s=>s.toUpperCase()).filter(Boolean);
-    if(parts.length>=2){ searches.push(`${parts[1]}, ${parts[0]}`); searches.push(`${parts[0]} ${parts[1]}`); searches.push(`${parts[1]} ${parts[0]}`); }
-    else searches.push(combined.toUpperCase());
+    if(parts.length>=2){
+      searches.push(`${parts[1]}, ${parts[0]}`);
+      searches.push(`${parts[0]} ${parts[1]}`);
+      searches.push(`${parts[1]} ${parts[0]}`);
+    } else searches.push(combined.toUpperCase());
   }
 
-  // Scorri pagine e righe
-  for(const lines of pagesLines){
-    for(let ri=0; ri<lines.length; ri++){
-      const line = lines[ri];
-      const up = line.toUpperCase();
-      // cerco le varianti del nome nella singola riga
+  for(const page of pagesTables){
+    const table = page.rows; // array of rows, each row is array[7] cells
+    for(let ri=0; ri<table.length; ri++){
+      const row = table[ri];
+      // check candidate name columns: often name in first 1-3 columns; build combined first3
+      const first3 = (row[0] || '') + ' ' + (row[1] || '') + ' ' + (row[2] || '');
+      const first3Up = first3.toUpperCase();
       let found = false;
-      for(const s of searches){ if(up.indexOf(s) !== -1){ found = true; break; } }
+      for(const s of searches){ if(first3Up.indexOf(s) !== -1){ found = true; break; } }
       if(!found) continue;
-
-      // abbiamo la riga corretta: prendila e anche le righe vicine (se i dati sono spezzati su più righe)
-      let context = up;
-      // includi alcune righe successive se presenti (ad es. studio o OB su riga dopo)
-      for(let k=1;k<=2 && ri + k < lines.length;k++) context += ' ' + lines[ri + k].toUpperCase();
-
-      // Ora estrai i codici in modalità C (quoted first)
-      const perDay = [];
-      for(let i=0;i<7;i++) perDay.push({shift:null, raw:null, studio:'', ob:''});
-
-      // 1) estrai sequenza di valori tra virgolette (in ordine)
-      const quoted = [];
-      const qRegex = /'([^']+)'/g;
-      let m;
-      while((m = qRegex.exec(context)) !== null){
-        if(m[1]) quoted.push(m[1].trim());
-      }
-
-      // 2) tokenizzazione di fallback dalla sola context string (rimuoviamo virgolette)
-      const fallbackTokens = context.replace(/['"]/g,' ').split(/[\s]+/).map(t=>t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
-
-      // Fill from quoted, left-to-right, assigning sequentialmente Lun→Dom
-      let qCursor = 0;
-      for(let d=0; d<7 && qCursor < quoted.length; d++){
-        let rawQ = quoted[qCursor++].toUpperCase();
-        // in rawQ possono esserci prefissi MNS etc; estrai candidati alfanumerici/symbol
-        const parts = rawQ.split(/[^A-Z0-9\*\+\s]/i).map(p=>p.trim()).filter(Boolean);
-        let foundShift = null;
-        for(let pi=parts.length-1; pi>=0; pi--){
-          const candidate = parts[pi].replace(/\s+/g,'').toUpperCase();
-          if(!candidate) continue;
-          if(/^OB\d+$/i.test(candidate)){ perDay[d].ob = candidate.toUpperCase(); continue; }
-          const mapped = SHIFT_MAP[candidate] || SHIFT_MAP[candidate.replace(/\s+/g,'')];
-          if(mapped){ foundShift = mapped; break; }
-          // studio?
-          if(STUDIO_MAP[candidate]) perDay[d].studio = STUDIO_MAP[candidate];
-        }
-        if(foundShift){ perDay[d].shift = foundShift; perDay[d].raw = rawQ; }
-      }
-
-      // If some days still empty, scan fallbackTokens left-to-right after the name occurrence and fill remaining
-      let dayCursor = 0; while(dayCursor<7 && perDay[dayCursor].shift) dayCursor++;
-      for(let ti=0; ti<fallbackTokens.length && dayCursor<7; ti++){
-        const tok = fallbackTokens[ti].toUpperCase();
-        if(!tok) continue;
-        if(IGNORED_TOKENS.has(tok)) continue;
-        if(/^OB\d+$/i.test(tok)){ if(!perDay[dayCursor].ob){ perDay[dayCursor].ob = tok; continue; } if(dayCursor>0 && !perDay[dayCursor-1].ob){ perDay[dayCursor-1].ob = tok; continue; } continue; }
-        const tokCollapsed = tok.replace(/\s+/g,'');
-        // studio?
-        if(STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed]){
-          const sname = STUDIO_MAP[tok] || STUDIO_MAP[tokCollapsed];
-          if(!perDay[dayCursor].studio) perDay[dayCursor].studio = sname;
-          continue;
-        }
-        // try shift mapping
-        let matchKey = SHIFT_MAP[tok] || SHIFT_MAP[tokCollapsed];
-        if(!matchKey){
-          const cleaned = tok.replace(/[^A-Z0-9\*\+]/g,'');
-          matchKey = SHIFT_MAP[cleaned];
-        }
-        if(matchKey){
-          perDay[dayCursor].shift = matchKey; perDay[dayCursor].raw = tok;
-          // lookahead for studio/ob in nearby tokens
-          for(let la=1; la<=6 && (ti+la) < fallbackTokens.length; la++){
-            const t2 = fallbackTokens[ti+la].toUpperCase().replace(/^[,.;:]+|[,.;:]+$/g,'').trim();
-            if(!t2) continue;
-            if(/^OB\d+$/i.test(t2) && !perDay[dayCursor].ob) perDay[dayCursor].ob = t2;
-            const t2c = t2.replace(/\s+/g,'');
-            if(!perDay[dayCursor].studio && (STUDIO_MAP[t2] || STUDIO_MAP[t2c])) perDay[dayCursor].studio = STUDIO_MAP[t2] || STUDIO_MAP[t2c];
-            if(perDay[dayCursor].studio && perDay[dayCursor].ob) break;
+      // we found candidate row: now read columns Lun..Dom which are likely at indices near end.
+      // We expect 7 day columns; but name may be in col0 and days in col1..7 or col0..6 depending on layout.
+      // Strategy: try different offsets to align days: for offset in 0..3 assume days are row[offset..offset+6]
+      for(let offset=0; offset<=3; offset++){
+        const cand = [];
+        for(let d=0; d<7; d++) cand.push(row[offset + d] || '');
+        // check how many of cand tokens contain shift-like patterns or quotes
+        const score = cand.reduce((acc,cell)=> {
+          const u = (cell||'').toUpperCase();
+          if(u.match(/'[^']+'/) || u.match(/^[A-Z0-9\*\+\s]+$/)) return acc+1;
+          return acc;
+        }, 0);
+        // accept if at least 2 non-empty (heuristic)
+        if(score >= 2){
+          // parse these 7 cells into perDay entries
+          const perDay = [];
+          for(let d=0; d<7; d++){
+            const cellText = (row[offset + d] || '').trim();
+            perDay.push(parseCellToDay(cellText));
           }
-          dayCursor++; while(dayCursor<7 && perDay[dayCursor].shift) dayCursor++;
+          // If at least one shift found, return
+          if(perDay.some(dt => dt.shift)) return perDay;
         }
       }
-
-      // Clean invalid shifts (95/96)
-      for(let i=0;i<7;i++){ const s = perDay[i].shift; if(!s) continue; if(s==='95' || s==='96'){ perDay[i].shift = null; perDay[i].raw = null; } }
-
-      if(perDay.some(d=>d.shift)) return perDay;
-      // else keep cercando altre righe
+      // if none offsets worked, still attempt parsing last 7 columns as days
+      const last7 = table[ri].slice(-7);
+      const pd = last7.map(parseCellToDay);
+      if(pd.some(dt=>dt.shift)) return pd;
     }
   }
   return null;
 }
 
-/* Build events e ICS (uguale a prima) */
+/* parse single cell content into {shift, raw, studio, ob}
+   rules:
+    - prefer codes between quotes: /'([^']+)'/
+    - if inside quotes extract candidates (possibly MNS'G -> 'G')
+    - fallback: try to match token against SHIFT_MAP
+    - detect OB\d+ and STUDIO_MAP in cell text
+*/
+function parseCellToDay(cellText){
+  const ret = {shift:null, raw:null, studio:'', ob:''};
+  if(!cellText) return ret;
+  const up = cellText.toUpperCase();
+  // extract quoted first
+  const q = [...up.matchAll(/'([^']+)'/g)].map(m=>m[1].trim());
+  if(q.length>0){
+    // try from last part to find shift
+    for(const rawQ of q){
+      const parts = rawQ.split(/[^A-Z0-9\*\+\s]/i).map(p=>p.trim()).filter(Boolean);
+      for(let pi=parts.length-1; pi>=0; pi--){
+        const cand = parts[pi].replace(/\s+/g,'').toUpperCase();
+        if(!cand) continue;
+        if(/^OB\d+$/i.test(cand)){ ret.ob = cand; continue; }
+        const mapped = SHIFT_MAP[cand] || SHIFT_MAP[cand.replace(/\s+/g,'')];
+        if(mapped){ ret.shift = mapped; ret.raw = rawQ; break; }
+        if(STUDIO_MAP[cand]) ret.studio = STUDIO_MAP[cand];
+      }
+      if(ret.shift) break;
+    }
+    // if found shift return (we still try to find studio/ob in whole cell)
+    if(ret.shift){
+      // find studio anywhere in cell
+      for(const key of Object.keys(STUDIO_MAP)){
+        if(up.indexOf(key) !== -1 || up.indexOf(STUDIO_MAP[key].toUpperCase()) !== -1){
+          ret.studio = STUDIO_MAP[key]; break;
+        }
+      }
+      // find OB
+      const obm = up.match(/OB\d+/i);
+      if(obm) ret.ob = obm[0].toUpperCase();
+      return ret;
+    }
+  }
+
+  // fallback: find shift tokens in the cell by scanning tokens left->right
+  const tokens = up.split(/[\s,;:\/]+/).map(t=>t.replace(/^[,.;:]+|[,.;:]+$/g,'').trim()).filter(Boolean);
+  for(const tok of tokens){
+    if(IGNORED_TOKENS.has(tok)) continue;
+    if(/^OB\d+$/i.test(tok)){ ret.ob = tok; continue; }
+    // studio?
+    const collapsed = tok.replace(/\s+/g,'');
+    if(STUDIO_MAP[tok] || STUDIO_MAP[collapsed]){ ret.studio = STUDIO_MAP[tok] || STUDIO_MAP[collapsed]; continue; }
+    // try shift match
+    let mapped = SHIFT_MAP[tok] || SHIFT_MAP[collapsed];
+    if(!mapped){
+      const cleaned = tok.replace(/[^A-Z0-9\*\+]/g,'');
+      mapped = SHIFT_MAP[cleaned];
+    }
+    if(mapped){ ret.shift = mapped; ret.raw = tok; break; }
+  }
+
+  // ensure 95/96 not taken as shift
+  if(ret.shift && (ret.shift === '95' || ret.shift === '96')){ ret.shift = null; ret.raw = null; }
+
+  return ret;
+}
+
+/* build events + ics */
 function buildEvents(startDate, perDay, personName){
   const evs = [];
   for(let i=0;i<7;i++){
@@ -270,13 +376,13 @@ function buildEvents(startDate, perDay, personName){
   return evs;
 }
 function buildICS(events){
-  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Orario//v2'];
+  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//PDF→Orario//v3'];
   events.forEach((ev,i)=>{ lines.push('BEGIN:VEVENT'); lines.push(`UID:${Date.now()}-${i}@pdf-orario`); lines.push(`DTSTAMP:${toICSDateUTC(new Date())}`); lines.push(`DTSTART:${toICSDateUTC(ev.start)}`); lines.push(`DTEND:${toICSDateUTC(ev.end)}`); lines.push(`SUMMARY:${ev.title}`); if(ev.desc) lines.push(`DESCRIPTION:${ev.desc.replace(/\n/g,'\\n')}`); if(ev.location) lines.push(`LOCATION:${ev.location}`); lines.push('END:VEVENT'); });
   lines.push('END:VCALENDAR'); return lines.join('\r\n');
 }
 
-/* UI flow */
-let lastPagesLines = null, lastPerDay = null, lastWeekStart = null;
+/* ---------- UI flow ---------- */
+let lastPagesTables = null, lastPerDay = null, lastWeekStart = null;
 
 document.getElementById('parseBtn').addEventListener('click', async ()=>{
   const f = document.getElementById('pdfFile').files[0];
@@ -285,20 +391,20 @@ document.getElementById('parseBtn').addEventListener('click', async ()=>{
   if(!f){ alert('Seleziona un file PDF.'); return; }
   if(!first && !last){ alert('Inserisci Nome o Cognome.'); return; }
 
-  setStatus('Lettura PDF e ricostruzione righe (pdf.js)...');
+  setStatus('Estrazione PDF e costruzione tabella (pdf.js)...');
   const ab = await f.arrayBuffer();
-  let pagesLines = [];
-  try{ pagesLines = await extractPagesAsLines(ab); } catch(e){ console.error(e); setStatus('Errore: impossibile estrarre testo. PDF potrebbe essere scannerizzato.'); return; }
-  lastPagesLines = pagesLines;
-  lastWeekStart = detectWeekStartFromLines(pagesLines);
-  if(!lastWeekStart) setStatus('Attenzione: header settimana non trovato (dd/mm/yyyy dd/mm/yyyy). Verrà usata la data odierna come fallback.');
+  let pagesTables = [];
+  try{ pagesTables = await extractPagesAsTables(ab); } catch(e){ console.error(e); setStatus('Errore estrazione PDF: probabilmente il file è scannerizzato.'); return; }
+  lastPagesTables = pagesTables;
+  lastWeekStart = detectWeekStartFromTables(pagesTables);
+  if(!lastWeekStart) setStatus('Header settimana non trovato; verrà usata la data odierna come fallback.');
 
-  setStatus('Parsing riga persona (modalità C, line-aware)...');
-  const perDay = parsePersonRowPerDayFromLines(pagesLines, first, last);
+  setStatus('Ricerca riga persona nelle tabelle (Lun→Dom) ...');
+  const perDay = parsePersonRowFromTable(pagesTables, first, last);
   lastPerDay = perDay;
-  const det = document.getElementById('detected'); det.innerHTML = '';
+  const det = document.getElementById('detected'); det.innerHTML = ''; document.getElementById('rawDebug').innerHTML='';
 
-  if(!perDay){ setStatus('Riga della persona non trovata automaticamente. Prova a inserire "COGNOME, NOME" o verifica che il PDF contenga testo selezionabile.'); document.getElementById('buildBtn').disabled = true; return; }
+  if(!perDay){ setStatus('Riga persona non trovata. Prova "COGNOME, NOME" o verifica che il PDF abbia testo selezionabile.'); document.getElementById('buildBtn').disabled = true; return; }
 
   // mostra risultati
   const dayNamesIT = ['Lun','Mar','Mer','Gio','Ven','Sab','Dom'];
@@ -313,6 +419,21 @@ document.getElementById('parseBtn').addEventListener('click', async ()=>{
   }
   html += '</tbody></table>';
   det.innerHTML = html;
+
+  // debug: show header x centers for first page
+  try {
+    const dbg = document.getElementById('rawDebug');
+    const page0 = pagesTables[0];
+    let dbgHtml = '<div class="mono"><strong>ColCenters (prima pagina):</strong> ' + (page0? (page0.colCenters||[]).map(x=>Math.round(x)).join(', '):'n/a') + '</div>';
+    dbgHtml += '<div class="mono"><strong>Righe (prima pagina) sample:</strong>\n';
+    if(page0){
+      for(let i=0;i<Math.min(8, page0.rows.length); i++){
+        dbgHtml += JSON.stringify(page0.rows[i]) + '\n';
+      }
+    }
+    dbgHtml += '</div>';
+    dbg.innerHTML = dbgHtml;
+  } catch(e){ /* ignore */ }
 
   renderOverrideGrid(perDay);
   setStatus('Controlla i turni rilevati e usa la griglia per eventuali correzioni. Poi clicca "Genera Calendario (.ics)".');
