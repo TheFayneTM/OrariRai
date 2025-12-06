@@ -1,317 +1,715 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Shift Schedule to Calendar Converter</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
-    <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';</script>
+    <title>RAI Shift Calendar Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; background-color: #f4f4f9; }
-        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
-        h1 { color: #333; }
-        .form-group { margin-bottom: 15px; }
-        label { display: block; margin-bottom: 5px; font-weight: bold; }
-        input[type="text"], input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
-        button { background-color: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; }
-        button:hover { background-color: #0056b3; }
-        #status { margin-top: 20px; padding: 10px; border-radius: 4px; }
-        .error { background-color: #f8d7da; color: #721c24; }
-        .success { background-color: #d4edda; color: #155724; }
-        .info { background-color: #cce5ff; color: #004085; }
-        pre { background: #eee; padding: 10px; overflow-x: auto; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        input[type="file"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus,
+        input[type="file"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        button {
+            width: 100%;
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin-bottom: 10px;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            display: block;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .shifts-preview {
+            margin-top: 20px;
+            padding: 20px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            border: 2px solid #667eea;
+            display: none;
+        }
+
+        .shifts-preview.active {
+            display: block;
+        }
+
+        .shifts-preview h3 {
+            color: #333;
+            margin-bottom: 15px;
+        }
+
+        .shift-item {
+            padding: 10px;
+            margin: 8px 0;
+            background: white;
+            border-radius: 5px;
+            border-left: 4px solid #667eea;
+        }
+
+        .shift-item strong {
+            color: #667eea;
+        }
+
+        .debug {
+            margin-top: 20px;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid #dee2e6;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+
+        .hidden {
+            display: none;
+        }
     </style>
 </head>
 <body>
+    <div class="container">
+        <h1>📅 RAI Shift Calendar Generator</h1>
+        <p class="subtitle">Genera il tuo calendario turni in formato ICS</p>
 
-<div class="container">
-    <h1>Shift PDF to Calendar (.ics)</h1>
-    <p>Upload your shift PDF and enter your name exactly as it appears (e.g., ROSSI, MARIO).</p>
+        <div id="uploadSection">
+            <div class="form-group">
+                <label for="pdfFile">Carica il PDF dell'orario:</label>
+                <input type="file" id="pdfFile" accept=".pdf" required>
+            </div>
 
-    <div class="form-group">
-        <label for="lastName">Cognome (Last Name):</label>
-        <input type="text" id="lastName" placeholder="e.g. ROSSI">
+            <div class="form-group">
+                <label for="firstName">Nome:</label>
+                <input type="text" id="firstName" placeholder="es. Marco" required>
+            </div>
+
+            <div class="form-group">
+                <label for="lastName">Cognome:</label>
+                <input type="text" id="lastName" placeholder="es. Natalizi" required>
+            </div>
+
+            <button type="button" id="extractBtn">Estrai Turni dal PDF</button>
+        </div>
+
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top: 10px; color: #666;">Elaborazione in corso...</p>
+        </div>
+
+        <div class="status" id="status"></div>
+
+        <div class="shifts-preview" id="shiftsPreview">
+            <h3>✅ Turni Trovati:</h3>
+            <div id="shiftsList"></div>
+            <button type="button" id="downloadBtn" class="secondary">⬇️ Scarica Calendario ICS</button>
+        </div>
+
+        <div style="margin-top: 20px;">
+            <h3 style="color: #333; font-size: 16px; margin-bottom: 10px;">🔍 Debug Log:</h3>
+            <div class="debug" id="debug">Waiting for action...</div>
+        </div>
     </div>
 
-    <div class="form-group">
-        <label for="firstName">Nome (First Name):</label>
-        <input type="text" id="firstName" placeholder="e.g. MARIO">
-    </div>
+    <script>
+        // Set PDF.js worker
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-    <div class="form-group">
-        <label for="pdfFile">Select PDF File:</label>
-        <input type="file" id="pdfFile" accept=".pdf">
-    </div>
+        // Global variables
+        let extractedSchedule = null;
+        let currentFirstName = '';
+        let currentLastName = '';
 
-    <button onclick="processPDF()">Generate Calendar File</button>
+        const SHIFT_TIMES = {
+            '4o': ['05:55', '13:30'], '5o': ['05:55', '14:30'], '01': ['05:45', '14:20'],
+            '05': ['05:55', '14:30'], '14': ['12:15', '20:50'], '57': ['11:25', '19:00'],
+            '5T': ['13:00', '20:35'], '1M': ['09:30', '18:05'], '2E': ['11:25', '20:00'],
+            '2Q': ['14:00', '22:35'], '3Z': ['07:30', '16:05'], '6E': ['05:30', '13:05'],
+            '6L': ['12:00', '19:35'], '7N': ['15:25', '23:00'], 'B1': ['05:50', '14:25'],
+            'C': ['07:00', '15:35'], 'C*': ['07:00', '14:35'], 'Ce*': ['07:00', '14:35'],
+            'D': ['08:00', '16:35'], 'D*': ['08:00', '15:35'], 'De*': ['08:00', '15:35'],
+            'E': ['08:30', '17:05'], 'E*': ['08:30', '16:05'], 'EZ': ['10:25', '19:00'],
+            'F': ['09:00', '17:35'], 'F*': ['09:00', '16:35'], 'Fe*': ['09:00', '16:35'],
+            'F0': ['08:25', '17:00'], 'FH': ['08:25', '16:00'], 'G': ['10:00', '18:35'],
+            'G*': ['10:00', '17:35'], 'G+': ['11:00', '18:35'], 'H': ['11:00', '19:30'],
+            'I': ['12:45', '21:20'], 'I*': ['12:45', '20:20'], 'L': ['13:30', '22:05'],
+            'L*': ['13:30', '21:05'], 'L+': ['14:30', '22:05'], 'M': ['15:00', '23:35'],
+            'M*': ['15:00', '22:35'], 'M+': ['16:00', '23:35'], 'N': ['15:55', '00:30'],
+            'N+': ['16:55', '00:30'], 'N1': ['16:25', '01:00'], 'O': ['16:55', '01:30'],
+            'RC': ['05:30', '14:05'], 'RG': ['12:00', '20:35'], 'RU': ['05:00', '13:35'],
+            'SR': ['10:45', '19:20'], 'TC': ['06:30', '15:05'], 'TD': ['06:30', '14:05'],
+            'UD': ['10:25', '18:00'], 'US': ['11:30', '19:05'], 'VI': ['11:30', '20:05'],
+            'XXX': ['00:00', '00:00']
+        };
 
-    <div id="status"></div>
-</div>
+        const LOCATIONS = {
+            'N1': 'Nomentano 1', 'N2': 'Nomentano 2', 'N3': 'Nomentano 3',
+            'N4': 'Nomentano 4', 'N5': 'Nomentano 5', 'N6': 'Nomentano 6',
+            'AFP1': 'Foro Italico', 'AFI': 'Foro Italico',
+            '1': 'Teulada 1', '2': 'Teulada 2', '3': 'Teulada 3',
+            '4': 'Teulada 4', '5': 'Teulada 5',
+            'SR1': 'Saxa Rubra 1', 'SR2': 'Saxa Rubra 2', 'SR3': 'Saxa Rubra 3',
+            'SR4': 'Saxa Rubra 4', 'SR5': 'Saxa Rubra 5 - Rai Sport',
+            'RAN': 'Saxa Rubra - RAI NEWS', 'AUM': 'Montecitorio',
+            'DISP': 'Disposizione', 'Disp.': 'Disposizione',
+            'TdV': 'Teatro delle Vittorie', 'SE': 'Servizio Esterno',
+            'MC': 'Media Center', 'QUA': 'Quarantena', 'QUB': 'Quarantena B',
+            'SEN': 'Senato', 'ES06': 'Esterno 06', 'S9A': 'Studio 9A',
+            'S09': 'Studio 09', 'S12': 'Studio 12', 'S03': 'Studio 03',
+            'S04': 'Studio 04', 'S07': 'Studio 07', 'TG1': 'TG1',
+            'TG2': 'TG2', 'TG3': 'TG3', 'OB': 'Outside Broadcast',
+            'OB20': 'Outside Broadcast 20', 'OB30': 'Outside Broadcast 30',
+            'OB41': 'Outside Broadcast 41', 'RT': 'Riposo Tecnico',
+            '645': '645', '475': '475'
+        };
 
-<script>
-    // --- DICTIONARIES PROVIDED BY USER ---
-    const shiftDefs = {
-        '4o': ['05:55', '13:30'], '5o': ['05:55', '14:30'], '01': ['05:45', '14:20'], '05': ['05:55', '14:30'],
-        '14': ['12:15', '20:50'], '57': ['11:25', '19:00'], '5T': ['13:00', '20:35'], '1M': ['09:30', '18:05'],
-        '2E': ['11:25', '20:00'], '2Q': ['14:00', '22:35'], '3Z': ['07:30', '16:05'], '6E': ['05:30', '13:05'],
-        '6L': ['12:00', '19:35'], '7N': ['15:25', '23:00'], 'B1': ['05:50', '14:25'], 'C': ['07:00', '15:35'],
-        'C*': ['07:00', '14:35'], 'Ce*': ['07:00', '14:35'], 'D': ['08:00', '16:35'], 'D*': ['08:00', '15:35'],
-        'De*': ['08:00', '15:35'], 'E': ['08:30', '17:05'], 'E*': ['08:30', '16:05'], 'EZ': ['10:25', '19:00'],
-        'F': ['09:00', '17:35'], 'F*': ['09:00', '16:35'], 'Fe*': ['09:00', '16:35'], 'F0': ['08:25', '17:00'],
-        'FH': ['08:25', '16:00'], 'G': ['10:00', '18:35'], 'G*': ['10:00', '17:35'], 'G+': ['11:00', '18:35'],
-        'H': ['11:00', '19:30'], 'I': ['12:45', '21:20'], 'I*': ['12:45', '20:20'], 'L': ['13:30', '22:05'],
-        'L*': ['13:30', '21:05'], 'L+': ['14:30', '22:05'], 'M': ['15:00', '23:35'], 'M*': ['15:00', '22:35'],
-        'M+': ['16:00', '23:35'], 'N': ['15:55', '00:30'], 'N+': ['16:55', '00:30'], 'N1': ['16:25', '01:00'],
-        'O': ['16:55', '01:30'], 'RC': ['05:30', '14:05'], 'RG': ['12:00', '20:35'], 'RU': ['05:00', '13:35'],
-        'SR': ['10:45', '19:20'], 'TC': ['06:30', '15:05'], 'TD': ['06:30', '14:05'], 'UD': ['10:25', '18:00'],
-        'US': ['11:30', '19:05'], 'VI': ['11:30', '20:05'], 'XXX': ['00:00', '00:00']
-    };
+        function log(message) {
+            const debug = document.getElementById('debug');
+            const timestamp = new Date().toLocaleTimeString();
+            debug.textContent += `[${timestamp}] ${message}\n`;
+            debug.scrollTop = debug.scrollHeight;
+            console.log(message);
+        }
 
-    const locationDefs = {
-        'N1': 'Nomentano 1', 'N2': 'Nomentano 2', 'N3': 'Nomentano 3', 'N4': 'Nomentano 4',
-        'N5': 'Nomentano 5', 'N6': 'Nomentano 6', 'AFP1': 'Foro Italico', 'AFI': 'Foro Italico',
-        '1': 'Teulada 1', '2': 'Teulada 2', '3': 'Teulada 3', '4': 'Teulada 4', '5': 'Teulada 5',
-        'SR1': 'Saxa Rubra 1', 'SR2': 'Saxa Rubra 2', 'SR3': 'Saxa Rubra 3', 'SR4': 'Saxa Rubra 4',
-        'SR5': 'Saxa Rubra 5 - Rai Sport', 'RAN': 'Saxa Rubra - RAI NEWS', 'AUM': 'Montecitorio',
-        'DISP': 'Disposizione', 'Disp.': 'Disposizione', 'TdV': 'Teatro delle Vittorie',
-        'SE': 'Servizio Esterno', 'MC': 'Media Center', 'QUA': 'Quarantena', 'QUB': 'Quarantena B',
-        'SEN': 'Senato', 'ES06': 'Esterno 06', 'S9A': 'Studio 9A', 'S09': 'Studio 09',
-        'S12': 'Studio 12', 'S03': 'Studio 03', 'S04': 'Studio 04', 'S07': 'Studio 07',
-        'TG1': 'TG1', 'TG2': 'TG2', 'TG3': 'TG3'
-    };
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = `status ${type}`;
+        }
 
-    function log(msg, type = 'info') {
-        const el = document.getElementById('status');
-        el.innerHTML = msg;
-        el.className = type;
-    }
+        function showLoading(show) {
+            document.getElementById('loading').classList.toggle('active', show);
+        }
 
-    async function processPDF() {
-        const fileInput = document.getElementById('pdfFile');
-        const lName = document.getElementById('lastName').value.toUpperCase().trim();
-        const fName = document.getElementById('firstName').value.toUpperCase().trim();
+        async function extractTextFromPDF(file) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            let fullText = '';
 
-        if (!fileInput.files[0]) return log("Please select a PDF file.", "error");
-        if (!lName || !fName) return log("Please enter both First and Last Name.", "error");
-
-        log("Reading PDF...", "info");
-
-        const fileReader = new FileReader();
-        fileReader.onload = async function() {
-            try {
-                const typedarray = new Uint8Array(this.result);
-                const pdf = await pdfjsLib.getDocument(typedarray).promise;
+            for (let i = 1; i <= pdf.numPages; i++) {
+                const page = await pdf.getPage(i);
+                const textContent = await page.getTextContent();
                 
-                let foundEvents = [];
-                let referenceDate = null; // Will store the Monday date
-
-                // --- PAGE LOOP ---
-                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-                    const page = await pdf.getPage(pageNum);
-                    const content = await page.getTextContent();
-                    const items = content.items;
-
-                    // 1. Find Reference Date (First Page usually)
-                    if (!referenceDate) {
-                        const dateRegex = /(\d{2})\/(\d{2})\/(\d{4})/;
-                        // Try to find two dates close to each other (Start - End)
-                        const textStr = items.map(i => i.str).join(' ');
-                        const match = textStr.match(dateRegex);
-                        if (match) {
-                            // In Italy PDF, the first date is usually the Monday start date
-                            referenceDate = new Date(`${match[3]}-${match[2]}-${match[1]}T00:00:00`);
-                            console.log("Reference Date Found:", referenceDate);
-                        }
+                const items = textContent.items.sort((a, b) => {
+                    const yDiff = Math.abs(a.transform[5] - b.transform[5]);
+                    if (yDiff > 5) {
+                        return b.transform[5] - a.transform[5];
                     }
-
-                    // 2. Identify Columns (X-coordinates) based on Headers
-                    // We look for "LUNEDI", "MARTEDI", etc.
-                    // This is crucial because columns might shift slightly per page.
-                    // Default fallback positions if headers aren't found on this page
-                    let xZones = [0, 150, 230, 310, 390, 470, 550, 630, 9999]; 
+                    return a.transform[4] - b.transform[4];
+                });
+                
+                let lastY = null;
+                let lineText = '';
+                
+                items.forEach(item => {
+                    const y = item.transform[5];
                     
-                    const days = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"];
-                    let foundHeaders = [];
+                    if (lastY !== null && Math.abs(y - lastY) > 5) {
+                        fullText += lineText + '\n';
+                        lineText = '';
+                    }
                     
-                    items.forEach(item => {
-                        const str = item.str.toUpperCase().trim();
-                        // Check if string contains a day name
-                        days.forEach((day, index) => {
-                            if (str.includes(day)) {
-                                foundHeaders.push({ index: index, x: item.transform[4] });
-                            }
-                        });
+                    lineText += item.str + ' ';
+                    lastY = y;
+                });
+                
+                fullText += lineText + '\n';
+            }
+
+            return fullText;
+        }
+
+        function findEmployeeLine(text, firstName, lastName) {
+            const lines = text.split('\n');
+            const searchNames = [
+                `${lastName.toUpperCase()}, ${firstName.toUpperCase()}`,
+                `${lastName.toUpperCase()},${firstName.toUpperCase()}`,
+                lastName.toUpperCase()
+            ];
+
+            for (let i = 0; i < lines.length; i++) {
+                const line = lines[i];
+                for (const searchName of searchNames) {
+                    if (line.includes(searchName)) {
+                        log(`✓ Found employee at line ${i}`);
+                        return { index: i, line: line, lines: lines };
+                    }
+                }
+            }
+            return null;
+        }
+
+        function extractWeekDates(text) {
+            const lines = text.split('\n');
+            
+            for (const line of lines) {
+                const match = line.match(/(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2})\/(\d{2})\/(\d{4})/);
+                if (match) {
+                    const startDay = parseInt(match[1]);
+                    const startMonth = parseInt(match[2]);
+                    const year = parseInt(match[3]);
+                    
+                    log(`✓ Found week dates: ${match[0]}`);
+                    return generateWeekDates(startDay, startMonth, year);
+                }
+            }
+            
+            return generateWeekDates(8, 12, 2025);
+        }
+
+        function generateWeekDates(day, month, year) {
+            const dates = [];
+            const startDate = new Date(year, month - 1, day);
+
+            for (let i = 0; i < 7; i++) {
+                const date = new Date(startDate);
+                date.setDate(startDate.getDate() + i);
+                dates.push(date);
+            }
+
+            return dates;
+        }
+
+        function parseSchedule(text, firstName, lastName) {
+            const employeeData = findEmployeeLine(text, firstName, lastName);
+            
+            if (!employeeData) {
+                return { found: false, schedule: [] };
+            }
+
+            const weekDates = extractWeekDates(text);
+            const schedule = [];
+            
+            // Get the line with the employee name - this line contains ALL the shifts!
+            const nameLine = employeeData.lines[employeeData.index];
+            log(`Name line: ${nameLine}`);
+            
+            // Split the line into tokens to process sequentially
+            // Remove the employee name part first
+            const dataPartMatch = nameLine.match(/[A-Z]+,\s*[A-Z]+\s+(.*)/);
+            if (!dataPartMatch) {
+                log('❌ Could not extract data part from name line');
+                return { found: true, schedule: [] };
+            }
+            
+            const dataPart = dataPartMatch[1];
+            log(`Data part: ${dataPart}`);
+            
+            // Find all shift codes and their positions
+            const shiftPattern = /'([A-Z*+0-9\s]{1,4})'/g;
+            let match;
+            const shiftsFound = [];
+            
+            while ((match = shiftPattern.exec(dataPart)) !== null) {
+                const shiftCode = match[1].trim(); // Trim spaces inside quotes
+                if (SHIFT_TIMES[shiftCode]) {
+                    shiftsFound.push({
+                        code: shiftCode,
+                        position: match.index,
+                        endPosition: match.index + match[0].length
                     });
-
-                    if (foundHeaders.length > 3) {
-                        foundHeaders.sort((a,b) => a.index - b.index);
-                        // Reconstruct zones based on found headers
-                        // We assume the header X is the start or center of the column
-                        // We'll set boundaries halfway between headers
-                        // Simplified: Use the found header X as the rough start
+                    log(`  Found shift code: '${shiftCode}'`);
+                }
+            }
+            
+            log(`✓ Found ${shiftsFound.length} valid shift codes`);
+            
+            if (shiftsFound.length === 0) {
+                log('❌ No shifts found on name line');
+                return { found: true, schedule: [] };
+            }
+            
+            // For each shift, extract its location
+            shiftsFound.forEach((shift, dayIndex) => {
+                if (dayIndex >= 7) return; // Only 7 days in a week
+                
+                // Get everything after this shift code until the next shift or end
+                let afterShift;
+                if (dayIndex < shiftsFound.length - 1) {
+                    // Get text between this shift and the next shift
+                    afterShift = dataPart.substring(shift.endPosition, shiftsFound[dayIndex + 1].position);
+                } else {
+                    // Last shift - get everything after it
+                    afterShift = dataPart.substring(shift.endPosition);
+                }
+                
+                log(`  After shift '${shift.code}': "${afterShift.trim()}"`);
+                
+                // Extract all tokens (words) after the shift
+                const tokens = afterShift.trim().split(/\s+/).filter(t => t.length > 0);
+                
+                let location = 'SE'; // Default
+                
+                // Look through tokens to find the location
+                // Skip: MFS, MNS, SE>, FS>, RCF>, and numbers like 95, 96
+                for (const token of tokens) {
+                    const cleaned = token.replace(/[>,<]/g, ''); // Remove arrows
+                    
+                    // Skip status codes
+                    if (['MFS', 'MNS', 'SE', 'FS', 'RCF', 'XXX', 'RT'].includes(cleaned)) {
+                        continue;
                     }
-
-                    // 3. Find the Row for the specific User
-                    // We group items by Y coordinate (tolerance of ~5)
-                    const rows = {};
-                    items.forEach(item => {
-                        const y = Math.round(item.transform[5]); // Y coordinate
-                        if (!rows[y]) rows[y] = [];
-                        rows[y].push(item);
-                    });
-
-                    // Search for the row containing Name
-                    let targetY = null;
-                    let targetRowItems = [];
-
-                    for (const [y, rowItems] of Object.entries(rows)) {
-                        const rowText = rowItems.map(i => i.str).join(' ').toUpperCase();
-                        if (rowText.includes(lName) && rowText.includes(fName)) {
-                            targetY = y;
-                            // We grab this row AND potentially the row immediately below it 
-                            // because sometimes shift codes are stacked (Line 1: code, Line 2: location)
-                            // Actually, let's grab a "Strip" of Y coordinates around this match
-                            break;
-                        }
+                    
+                    // Skip day off codes (95, 96)
+                    if (['95', '96'].includes(cleaned)) {
+                        continue;
                     }
+                    
+                    // This should be the location
+                    location = cleaned;
+                    break;
+                }
+                
+                log(`  Day ${dayIndex + 1}: ${shift.code} @ ${location}`);
+                
+                schedule.push({
+                    date: weekDates[dayIndex],
+                    shiftCode: shift.code,
+                    location: location
+                });
+            });
+            
+            log(`✓ Total shifts extracted: ${schedule.length}`);
 
-                    if (targetY) {
-                        // Get all items within a Y-range (e.g., +/- 15 units) of the name
-                        const yNum = parseFloat(targetY);
-                        const rowStrip = items.filter(i => Math.abs(i.transform[5] - yNum) < 20);
+            return { found: true, schedule: schedule };
+        }
 
-                        // Sort by X coordinate (Left to Right)
-                        rowStrip.sort((a, b) => a.transform[4] - b.transform[4]);
+        function getLocationName(locationCode) {
+            let cleanCode = locationCode.replace(/^OB-?/, '').replace(/[>\d]+$/, '');
+            
+            if (LOCATIONS[cleanCode]) return LOCATIONS[cleanCode];
+            if (LOCATIONS[locationCode]) return LOCATIONS[locationCode];
+            
+            for (const [key, value] of Object.entries(LOCATIONS)) {
+                if (locationCode.includes(key) || key.includes(locationCode)) {
+                    return value;
+                }
+            }
+            
+            return locationCode;
+        }
 
-                        // Determine Columns based on Page Width (standard PDF A4 landscape approx 842pt wide)
-                        // This is an estimation based on the visual layout of such documents
-                        // Name is usually Left (< 120). 
-                        // Then 7 columns.
-                        const startX = 130; 
-                        const endX = 800;
-                        const colWidth = (endX - startX) / 7;
+        function displayShifts(schedule) {
+            const shiftsList = document.getElementById('shiftsList');
+            shiftsList.innerHTML = '';
 
-                        // Iterate through items in the user's row
-                        rowStrip.forEach(item => {
-                            const x = item.transform[4];
-                            const text = item.str.trim();
-                            if (x < startX || text.length < 1) return; // Skip name column or empty
+            schedule.forEach((shift, idx) => {
+                const times = SHIFT_TIMES[shift.shiftCode];
+                const locationName = getLocationName(shift.location);
+                
+                const div = document.createElement('div');
+                div.className = 'shift-item';
+                div.innerHTML = `
+                    <strong>${shift.date.toLocaleDateString('it-IT', { weekday: 'long', day: '2-digit', month: '2-digit' })}</strong><br>
+                    Turno: ${shift.shiftCode} (${times[0]} - ${times[1]})<br>
+                    Luogo: ${locationName}
+                `;
+                shiftsList.appendChild(div);
+            });
 
-                            // Calculate which day index (0=Mon, 6=Sun)
-                            const dayIndex = Math.floor((x - startX) / colWidth);
-                            
-                            if (dayIndex >= 0 && dayIndex <= 6) {
-                                // Analyze text for codes
-                                // Split by spaces or special chars if multiple codes exist
-                                const parts = text.split(/[\s\n]+/);
-                                
-                                parts.forEach(part => {
-                                    // Clean the part
-                                    let cleanPart = part.replace(/[^a-zA-Z0-9+*]/g, '');
-                                    
-                                    // Check if it's a known SHIFT CODE
-                                    if (shiftDefs[cleanPart]) {
-                                        foundEvents.push({
-                                            dayIndex: dayIndex,
-                                            code: cleanPart,
-                                            type: 'shift',
-                                            raw: part
-                                        });
-                                    } 
-                                    // Check if it's a known LOCATION CODE
-                                    else if (locationDefs[cleanPart]) {
-                                        // We associate this location with the most recent shift added for this day
-                                        // OR store it to combine later
-                                        const lastEvent = foundEvents[foundEvents.length - 1];
-                                        if (lastEvent && lastEvent.dayIndex === dayIndex) {
-                                            lastEvent.location = locationDefs[cleanPart];
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                    }
+            document.getElementById('shiftsPreview').classList.add('active');
+        }
+
+        function generateICS(schedule, firstName, lastName) {
+            let icsContent = [
+                'BEGIN:VCALENDAR',
+                'VERSION:2.0',
+                'PRODID:-//RAI Shift Calendar//EN',
+                'CALSCALE:GREGORIAN',
+                'METHOD:PUBLISH',
+                'X-WR-CALNAME:RAI Turni - ' + firstName + ' ' + lastName,
+                'X-WR-TIMEZONE:Europe/Rome'
+            ];
+
+            schedule.forEach(shift => {
+                const times = SHIFT_TIMES[shift.shiftCode];
+                if (!times || shift.shiftCode === 'XXX') return;
+
+                const [startHour, startMin] = times[0].split(':');
+                const [endHour, endMin] = times[1].split(':');
+
+                const startDate = new Date(shift.date);
+                startDate.setHours(parseInt(startHour), parseInt(startMin), 0);
+
+                let endDate = new Date(shift.date);
+                endDate.setHours(parseInt(endHour), parseInt(endMin), 0);
+
+                if (parseInt(endHour) < parseInt(startHour)) {
+                    endDate.setDate(endDate.getDate() + 1);
                 }
 
-                if (foundEvents.length === 0) {
-                    return log("Name found, but no shifts detected, or Name not found.", "error");
+                const locationName = getLocationName(shift.location);
+                const eventTitle = `${shift.shiftCode} - ${locationName}`;
+
+                icsContent.push('BEGIN:VEVENT');
+                icsContent.push(`DTSTART:${formatICSDate(startDate)}`);
+                icsContent.push(`DTEND:${formatICSDate(endDate)}`);
+                icsContent.push(`SUMMARY:${eventTitle}`);
+                icsContent.push(`LOCATION:${locationName}`);
+                icsContent.push(`DESCRIPTION:Turno ${shift.shiftCode}\\nOrario: ${times[0]} - ${times[1]}`);
+                icsContent.push(`UID:${Date.now()}-${Math.random()}@rai-shifts`);
+                icsContent.push(`DTSTAMP:${formatICSDate(new Date())}`);
+                icsContent.push('END:VEVENT');
+            });
+
+            icsContent.push('END:VCALENDAR');
+            return icsContent.join('\r\n');
+        }
+
+        function formatICSDate(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${year}${month}${day}T${hours}${minutes}${seconds}`;
+        }
+
+        function downloadICS(content, firstName, lastName) {
+            const blob = new Blob([content], { type: 'text/calendar;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `RAI_Turni_${firstName}_${lastName}.ics`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        }
+
+        // Extract button click handler
+        document.getElementById('extractBtn').onclick = async function() {
+            log('');
+            log('='.repeat(50));
+            log('🚀 EXTRACT BUTTON CLICKED');
+            
+            const pdfFile = document.getElementById('pdfFile').files[0];
+            const firstName = document.getElementById('firstName').value.trim();
+            const lastName = document.getElementById('lastName').value.trim();
+
+            log(`📄 File: ${pdfFile ? pdfFile.name : 'NONE'}`);
+            log(`👤 Name: ${firstName} ${lastName}`);
+
+            if (!pdfFile) {
+                showStatus('❌ Seleziona un file PDF!', 'error');
+                log('❌ No PDF file selected');
+                return;
+            }
+
+            if (!firstName || !lastName) {
+                showStatus('❌ Inserisci nome e cognome!', 'error');
+                log('❌ Name fields empty');
+                return;
+            }
+
+            try {
+                showLoading(true);
+                showStatus('', '');
+                document.getElementById('shiftsPreview').classList.remove('active');
+
+                log('📖 Extracting PDF text...');
+                const text = await extractTextFromPDF(pdfFile);
+                log(`✓ Extracted ${text.length} characters`);
+                
+                log('🔍 Searching for employee...');
+                const result = parseSchedule(text, firstName, lastName);
+
+                if (!result.found) {
+                    showStatus(`❌ Dipendente "${firstName} ${lastName}" non trovato`, 'error');
+                    log('❌ Employee not found');
+                    showLoading(false);
+                    return;
                 }
 
-                if (!referenceDate) {
-                    return log("Could not detect the reference date (Monday) in the PDF.", "error");
+                if (result.schedule.length === 0) {
+                    showStatus('❌ Nessun turno trovato', 'error');
+                    log('❌ No shifts found');
+                    showLoading(false);
+                    return;
                 }
 
-                generateICS(foundEvents, referenceDate, `${lName} ${fName}`);
+                log(`✅ SUCCESS! Found ${result.schedule.length} shifts`);
+                extractedSchedule = result.schedule;
+                currentFirstName = firstName;
+                currentLastName = lastName;
 
-            } catch (e) {
-                console.error(e);
-                log("Error parsing PDF: " + e.message, "error");
+                displayShifts(result.schedule);
+                showStatus(`✓ Trovati ${result.schedule.length} turni!`, 'success');
+                showLoading(false);
+
+            } catch (error) {
+                log('💥 ERROR: ' + error.message);
+                console.error(error);
+                showStatus('❌ Errore: ' + error.message, 'error');
+                showLoading(false);
             }
         };
-        fileReader.readAsArrayBuffer(fileInput.files[0]);
-    }
 
-    function generateICS(events, startDate, userName) {
-        let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//MyShiftApp//EN\n";
-
-        events.forEach(event => {
-            const shiftTimes = shiftDefs[event.code];
-            if (!shiftTimes) return; // Should not happen
-
-            // Calculate Date
-            let currentDay = new Date(startDate);
-            currentDay.setDate(startDate.getDate() + event.dayIndex);
-
-            const year = currentDay.getFullYear();
-            const month = String(currentDay.getMonth() + 1).padStart(2, '0');
-            const day = String(currentDay.getDate()).padStart(2, '0');
-            const dateStr = `${year}${month}${day}`;
-
-            // Parse Times
-            const [startH, startM] = shiftTimes[0].split(':');
-            const [endH, endM] = shiftTimes[1].split(':');
-
-            // Handle overnight shifts (End time < Start time)
-            let endDateStr = dateStr;
-            if (parseInt(endH) < parseInt(startH)) {
-                let nextDay = new Date(currentDay);
-                nextDay.setDate(currentDay.getDate() + 1);
-                const ny = nextDay.getFullYear();
-                const nm = String(nextDay.getMonth() + 1).padStart(2, '0');
-                const nd = String(nextDay.getDate()).padStart(2, '0');
-                endDateStr = `${ny}${nm}${nd}`;
+        // Download button click handler
+        document.getElementById('downloadBtn').onclick = function() {
+            log('');
+            log('💾 DOWNLOAD BUTTON CLICKED');
+            
+            if (!extractedSchedule) {
+                showStatus('❌ Nessun turno da scaricare!', 'error');
+                return;
             }
 
-            const dtStart = `${dateStr}T${startH}${startM}00`;
-            const dtEnd = `${endDateStr}T${endH}${endM}00`;
+            try {
+                log('📅 Generating ICS...');
+                const icsContent = generateICS(extractedSchedule, currentFirstName, currentLastName);
+                log(`✓ ICS generated (${icsContent.length} bytes)`);
+                
+                log('⬇️ Downloading...');
+                downloadICS(icsContent, currentFirstName, currentLastName);
+                log('✅ Download complete!');
+                showStatus('✓ File scaricato con successo!', 'success');
+            } catch (error) {
+                log('💥 ERROR: ' + error.message);
+                console.error(error);
+                showStatus('❌ Errore nel download: ' + error.message, 'error');
+            }
+        };
 
-            // Build Summary and Location
-            const locationName = event.location || "";
-            const summary = `${event.code} - ${locationName}`;
-
-            icsContent += "BEGIN:VEVENT\n";
-            icsContent += `SUMMARY:${summary}\n`;
-            icsContent += `DTSTART:${dtStart}\n`;
-            icsContent += `DTEND:${dtEnd}\n`;
-            icsContent += `DESCRIPTION:Shift Code: ${event.code} Location: ${locationName}\n`;
-            if (locationName) icsContent += `LOCATION:${locationName}\n`;
-            icsContent += "END:VEVENT\n";
-        });
-
-        icsContent += "END:VCALENDAR";
-
-        // Trigger Download
-        const blob = new Blob([icsContent], { type: 'text/calendar' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `Turni_${userName.replace(' ', '_')}.ics`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        log(`Success! Downloaded calendar for ${userName}`, "success");
-    }
-</script>
-
+        log('✓ Page loaded successfully');
+        log('✓ Ready to process PDF files');
+    </script>
 </body>
 </html>
