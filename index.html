@@ -1,106 +1,317 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>RAI Schedule Converter</title>
-  <!-- Tailwind CSS CDN -->
-  <script src="https://cdn.tailwindcss.com"></script>
-  <!-- Lucide icons CDN -->
-  <script type="module">
-    import * as lucide from 'https://cdn.jsdelivr.net/npm/lucide@0.278.0/dist/esm/lucide.js';
-    window.lucide = lucide;
-  </script>
-  <!-- React and ReactDOM CDN -->
-  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shift Schedule to Calendar Converter</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script>pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 20px; max-width: 800px; margin: 0 auto; background-color: #f4f4f9; }
+        .container { background: white; padding: 30px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1 { color: #333; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; margin-bottom: 5px; font-weight: bold; }
+        input[type="text"], input[type="file"] { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        button { background-color: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 16px; width: 100%; }
+        button:hover { background-color: #0056b3; }
+        #status { margin-top: 20px; padding: 10px; border-radius: 4px; }
+        .error { background-color: #f8d7da; color: #721c24; }
+        .success { background-color: #d4edda; color: #155724; }
+        .info { background-color: #cce5ff; color: #004085; }
+        pre { background: #eee; padding: 10px; overflow-x: auto; }
+    </style>
 </head>
-<body class="bg-slate-900 min-h-screen">
-  <div id="root"></div>
+<body>
 
-  <script type="text/javascript">
-    const { useState } = React;
-    const { Calendar, Upload, Download, AlertCircle, CheckCircle } = window.lucide;
+<div class="container">
+    <h1>Shift PDF to Calendar (.ics)</h1>
+    <p>Upload your shift PDF and enter your name exactly as it appears (e.g., ROSSI, MARIO).</p>
 
-    function RAIScheduleConverter() {
-      const [file, setFile] = useState(null);
-      const [employeeName, setEmployeeName] = useState('');
-      const [status, setStatus] = useState('');
-      const [error, setError] = useState('');
-      const [schedule, setSchedule] = useState(null);
-      const [processing, setProcessing] = useState(false);
+    <div class="form-group">
+        <label for="lastName">Cognome (Last Name):</label>
+        <input type="text" id="lastName" placeholder="e.g. ROSSI">
+    </div>
 
-      // For brevity, we keep only part of the shiftTimes and locations here
-      const shiftTimes = { 'H': ['11:00', '19:30'], 'XXX': ['00:00','00:00'] };
-      const locations = { 'N1':'Nomentano 1', 'Disp.':'Disposizione' };
+    <div class="form-group">
+        <label for="firstName">Nome (First Name):</label>
+        <input type="text" id="firstName" placeholder="e.g. MARIO">
+    </div>
 
-      const createEventTitle = (shift, location, obVan) => {
-        let title = shift;
-        if(location && locations[location]) title += `, ${locations[location]}`;
-        else if(location) title += `, ${location}`;
-        if(obVan) title += `, OB${obVan}`;
-        return title;
-      };
+    <div class="form-group">
+        <label for="pdfFile">Select PDF File:</label>
+        <input type="file" id="pdfFile" accept=".pdf">
+    </div>
 
-      const handleFileUpload = (e) => {
-        const uploadedFile = e.target.files[0];
-        if(!uploadedFile) return;
-        if(uploadedFile.type !== 'application/pdf') { setError('Per favore carica un file PDF'); return; }
-        setFile(uploadedFile); setError(''); setStatus('');
-      };
+    <button onclick="processPDF()">Generate Calendar File</button>
 
-      const processSchedule = async () => {
-        if(!file || !employeeName.trim()){ setError('Per favore carica un file e inserisci il nome del dipendente'); return; }
-        setProcessing(true); setError(''); setStatus('Elaborazione in corso...');
+    <div id="status"></div>
+</div>
 
-        try {
-          // Simulated schedule extraction for demo purposes
-          const weekStart = new Date();
-          const scheduleData = [
-            { shift: 'H', location: 'N1', obVan: '' },
-            { shift: 'XXX', location: '', obVan: '' },
-            { shift: 'H', location: 'Disp.', obVan: '' },
-            { shift: 'XXX', location: '', obVan: '' },
-            { shift: 'H', location: 'N1', obVan: '' },
-            { shift: 'H', location: 'N1', obVan: '' },
-            { shift: 'XXX', location: '', obVan: '' }
-          ];
-          setSchedule({ data: scheduleData, weekStart });
-          setStatus('Programma estratto con successo!');
-          setProcessing(false);
-        } catch(err) {
-          setError(`Errore: ${err.message}`);
-          setStatus('');
-          setProcessing(false);
-        }
-      };
+<script>
+    // --- DICTIONARIES PROVIDED BY USER ---
+    const shiftDefs = {
+        '4o': ['05:55', '13:30'], '5o': ['05:55', '14:30'], '01': ['05:45', '14:20'], '05': ['05:55', '14:30'],
+        '14': ['12:15', '20:50'], '57': ['11:25', '19:00'], '5T': ['13:00', '20:35'], '1M': ['09:30', '18:05'],
+        '2E': ['11:25', '20:00'], '2Q': ['14:00', '22:35'], '3Z': ['07:30', '16:05'], '6E': ['05:30', '13:05'],
+        '6L': ['12:00', '19:35'], '7N': ['15:25', '23:00'], 'B1': ['05:50', '14:25'], 'C': ['07:00', '15:35'],
+        'C*': ['07:00', '14:35'], 'Ce*': ['07:00', '14:35'], 'D': ['08:00', '16:35'], 'D*': ['08:00', '15:35'],
+        'De*': ['08:00', '15:35'], 'E': ['08:30', '17:05'], 'E*': ['08:30', '16:05'], 'EZ': ['10:25', '19:00'],
+        'F': ['09:00', '17:35'], 'F*': ['09:00', '16:35'], 'Fe*': ['09:00', '16:35'], 'F0': ['08:25', '17:00'],
+        'FH': ['08:25', '16:00'], 'G': ['10:00', '18:35'], 'G*': ['10:00', '17:35'], 'G+': ['11:00', '18:35'],
+        'H': ['11:00', '19:30'], 'I': ['12:45', '21:20'], 'I*': ['12:45', '20:20'], 'L': ['13:30', '22:05'],
+        'L*': ['13:30', '21:05'], 'L+': ['14:30', '22:05'], 'M': ['15:00', '23:35'], 'M*': ['15:00', '22:35'],
+        'M+': ['16:00', '23:35'], 'N': ['15:55', '00:30'], 'N+': ['16:55', '00:30'], 'N1': ['16:25', '01:00'],
+        'O': ['16:55', '01:30'], 'RC': ['05:30', '14:05'], 'RG': ['12:00', '20:35'], 'RU': ['05:00', '13:35'],
+        'SR': ['10:45', '19:20'], 'TC': ['06:30', '15:05'], 'TD': ['06:30', '14:05'], 'UD': ['10:25', '18:00'],
+        'US': ['11:30', '19:05'], 'VI': ['11:30', '20:05'], 'XXX': ['00:00', '00:00']
+    };
 
-      const downloadICS = () => {
-        if(!schedule) return;
-        const icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nEND:VCALENDAR"; // simplified
-        const blob = new Blob([icsContent], { type: 'text/calendar;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `turni_${employeeName.replace(/\s+/g,'_')}.ics`;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        URL.revokeObjectURL(url);
-      };
+    const locationDefs = {
+        'N1': 'Nomentano 1', 'N2': 'Nomentano 2', 'N3': 'Nomentano 3', 'N4': 'Nomentano 4',
+        'N5': 'Nomentano 5', 'N6': 'Nomentano 6', 'AFP1': 'Foro Italico', 'AFI': 'Foro Italico',
+        '1': 'Teulada 1', '2': 'Teulada 2', '3': 'Teulada 3', '4': 'Teulada 4', '5': 'Teulada 5',
+        'SR1': 'Saxa Rubra 1', 'SR2': 'Saxa Rubra 2', 'SR3': 'Saxa Rubra 3', 'SR4': 'Saxa Rubra 4',
+        'SR5': 'Saxa Rubra 5 - Rai Sport', 'RAN': 'Saxa Rubra - RAI NEWS', 'AUM': 'Montecitorio',
+        'DISP': 'Disposizione', 'Disp.': 'Disposizione', 'TdV': 'Teatro delle Vittorie',
+        'SE': 'Servizio Esterno', 'MC': 'Media Center', 'QUA': 'Quarantena', 'QUB': 'Quarantena B',
+        'SEN': 'Senato', 'ES06': 'Esterno 06', 'S9A': 'Studio 9A', 'S09': 'Studio 09',
+        'S12': 'Studio 12', 'S03': 'Studio 03', 'S04': 'Studio 04', 'S07': 'Studio 07',
+        'TG1': 'TG1', 'TG2': 'TG2', 'TG3': 'TG3'
+    };
 
-      return React.createElement('div', { className: 'max-w-4xl mx-auto p-6' },
-        React.createElement('h1', { className: 'text-white text-3xl mb-4' }, 'Convertitore Turni RAI'),
-        React.createElement('input', { type:'text', placeholder:'Nome e Cognome', value:employeeName, onChange:e=>setEmployeeName(e.target.value), className:'p-2 rounded mb-2 w-full' }),
-        React.createElement('input', { type:'file', accept:'.pdf', onChange:handleFileUpload, className:'mb-2 w-full' }),
-        React.createElement('button', { onClick:processSchedule, className:'bg-purple-600 text-white p-2 rounded w-full mb-2' }, processing?'Elaborazione...':'Elabora Programma'),
-        status && React.createElement('div', { className:'text-green-400 mb-2' }, status),
-        error && React.createElement('div', { className:'text-red-400 mb-2' }, error),
-        schedule && React.createElement('button', { onClick:downloadICS, className:'bg-green-600 text-white p-2 rounded w-full mt-2' }, 'Scarica .ICS')
-      );
+    function log(msg, type = 'info') {
+        const el = document.getElementById('status');
+        el.innerHTML = msg;
+        el.className = type;
     }
 
-    ReactDOM.createRoot(document.getElementById('root')).render(React.createElement(RAIScheduleConverter));
-  </script>
+    async function processPDF() {
+        const fileInput = document.getElementById('pdfFile');
+        const lName = document.getElementById('lastName').value.toUpperCase().trim();
+        const fName = document.getElementById('firstName').value.toUpperCase().trim();
+
+        if (!fileInput.files[0]) return log("Please select a PDF file.", "error");
+        if (!lName || !fName) return log("Please enter both First and Last Name.", "error");
+
+        log("Reading PDF...", "info");
+
+        const fileReader = new FileReader();
+        fileReader.onload = async function() {
+            try {
+                const typedarray = new Uint8Array(this.result);
+                const pdf = await pdfjsLib.getDocument(typedarray).promise;
+                
+                let foundEvents = [];
+                let referenceDate = null; // Will store the Monday date
+
+                // --- PAGE LOOP ---
+                for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+                    const page = await pdf.getPage(pageNum);
+                    const content = await page.getTextContent();
+                    const items = content.items;
+
+                    // 1. Find Reference Date (First Page usually)
+                    if (!referenceDate) {
+                        const dateRegex = /(\d{2})\/(\d{2})\/(\d{4})/;
+                        // Try to find two dates close to each other (Start - End)
+                        const textStr = items.map(i => i.str).join(' ');
+                        const match = textStr.match(dateRegex);
+                        if (match) {
+                            // In Italy PDF, the first date is usually the Monday start date
+                            referenceDate = new Date(`${match[3]}-${match[2]}-${match[1]}T00:00:00`);
+                            console.log("Reference Date Found:", referenceDate);
+                        }
+                    }
+
+                    // 2. Identify Columns (X-coordinates) based on Headers
+                    // We look for "LUNEDI", "MARTEDI", etc.
+                    // This is crucial because columns might shift slightly per page.
+                    // Default fallback positions if headers aren't found on this page
+                    let xZones = [0, 150, 230, 310, 390, 470, 550, 630, 9999]; 
+                    
+                    const days = ["LUNEDI", "MARTEDI", "MERCOLEDI", "GIOVEDI", "VENERDI", "SABATO", "DOMENICA"];
+                    let foundHeaders = [];
+                    
+                    items.forEach(item => {
+                        const str = item.str.toUpperCase().trim();
+                        // Check if string contains a day name
+                        days.forEach((day, index) => {
+                            if (str.includes(day)) {
+                                foundHeaders.push({ index: index, x: item.transform[4] });
+                            }
+                        });
+                    });
+
+                    if (foundHeaders.length > 3) {
+                        foundHeaders.sort((a,b) => a.index - b.index);
+                        // Reconstruct zones based on found headers
+                        // We assume the header X is the start or center of the column
+                        // We'll set boundaries halfway between headers
+                        // Simplified: Use the found header X as the rough start
+                    }
+
+                    // 3. Find the Row for the specific User
+                    // We group items by Y coordinate (tolerance of ~5)
+                    const rows = {};
+                    items.forEach(item => {
+                        const y = Math.round(item.transform[5]); // Y coordinate
+                        if (!rows[y]) rows[y] = [];
+                        rows[y].push(item);
+                    });
+
+                    // Search for the row containing Name
+                    let targetY = null;
+                    let targetRowItems = [];
+
+                    for (const [y, rowItems] of Object.entries(rows)) {
+                        const rowText = rowItems.map(i => i.str).join(' ').toUpperCase();
+                        if (rowText.includes(lName) && rowText.includes(fName)) {
+                            targetY = y;
+                            // We grab this row AND potentially the row immediately below it 
+                            // because sometimes shift codes are stacked (Line 1: code, Line 2: location)
+                            // Actually, let's grab a "Strip" of Y coordinates around this match
+                            break;
+                        }
+                    }
+
+                    if (targetY) {
+                        // Get all items within a Y-range (e.g., +/- 15 units) of the name
+                        const yNum = parseFloat(targetY);
+                        const rowStrip = items.filter(i => Math.abs(i.transform[5] - yNum) < 20);
+
+                        // Sort by X coordinate (Left to Right)
+                        rowStrip.sort((a, b) => a.transform[4] - b.transform[4]);
+
+                        // Determine Columns based on Page Width (standard PDF A4 landscape approx 842pt wide)
+                        // This is an estimation based on the visual layout of such documents
+                        // Name is usually Left (< 120). 
+                        // Then 7 columns.
+                        const startX = 130; 
+                        const endX = 800;
+                        const colWidth = (endX - startX) / 7;
+
+                        // Iterate through items in the user's row
+                        rowStrip.forEach(item => {
+                            const x = item.transform[4];
+                            const text = item.str.trim();
+                            if (x < startX || text.length < 1) return; // Skip name column or empty
+
+                            // Calculate which day index (0=Mon, 6=Sun)
+                            const dayIndex = Math.floor((x - startX) / colWidth);
+                            
+                            if (dayIndex >= 0 && dayIndex <= 6) {
+                                // Analyze text for codes
+                                // Split by spaces or special chars if multiple codes exist
+                                const parts = text.split(/[\s\n]+/);
+                                
+                                parts.forEach(part => {
+                                    // Clean the part
+                                    let cleanPart = part.replace(/[^a-zA-Z0-9+*]/g, '');
+                                    
+                                    // Check if it's a known SHIFT CODE
+                                    if (shiftDefs[cleanPart]) {
+                                        foundEvents.push({
+                                            dayIndex: dayIndex,
+                                            code: cleanPart,
+                                            type: 'shift',
+                                            raw: part
+                                        });
+                                    } 
+                                    // Check if it's a known LOCATION CODE
+                                    else if (locationDefs[cleanPart]) {
+                                        // We associate this location with the most recent shift added for this day
+                                        // OR store it to combine later
+                                        const lastEvent = foundEvents[foundEvents.length - 1];
+                                        if (lastEvent && lastEvent.dayIndex === dayIndex) {
+                                            lastEvent.location = locationDefs[cleanPart];
+                                        }
+                                    }
+                                });
+                            }
+                        });
+                    }
+                }
+
+                if (foundEvents.length === 0) {
+                    return log("Name found, but no shifts detected, or Name not found.", "error");
+                }
+
+                if (!referenceDate) {
+                    return log("Could not detect the reference date (Monday) in the PDF.", "error");
+                }
+
+                generateICS(foundEvents, referenceDate, `${lName} ${fName}`);
+
+            } catch (e) {
+                console.error(e);
+                log("Error parsing PDF: " + e.message, "error");
+            }
+        };
+        fileReader.readAsArrayBuffer(fileInput.files[0]);
+    }
+
+    function generateICS(events, startDate, userName) {
+        let icsContent = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//MyShiftApp//EN\n";
+
+        events.forEach(event => {
+            const shiftTimes = shiftDefs[event.code];
+            if (!shiftTimes) return; // Should not happen
+
+            // Calculate Date
+            let currentDay = new Date(startDate);
+            currentDay.setDate(startDate.getDate() + event.dayIndex);
+
+            const year = currentDay.getFullYear();
+            const month = String(currentDay.getMonth() + 1).padStart(2, '0');
+            const day = String(currentDay.getDate()).padStart(2, '0');
+            const dateStr = `${year}${month}${day}`;
+
+            // Parse Times
+            const [startH, startM] = shiftTimes[0].split(':');
+            const [endH, endM] = shiftTimes[1].split(':');
+
+            // Handle overnight shifts (End time < Start time)
+            let endDateStr = dateStr;
+            if (parseInt(endH) < parseInt(startH)) {
+                let nextDay = new Date(currentDay);
+                nextDay.setDate(currentDay.getDate() + 1);
+                const ny = nextDay.getFullYear();
+                const nm = String(nextDay.getMonth() + 1).padStart(2, '0');
+                const nd = String(nextDay.getDate()).padStart(2, '0');
+                endDateStr = `${ny}${nm}${nd}`;
+            }
+
+            const dtStart = `${dateStr}T${startH}${startM}00`;
+            const dtEnd = `${endDateStr}T${endH}${endM}00`;
+
+            // Build Summary and Location
+            const locationName = event.location || "";
+            const summary = `${event.code} - ${locationName}`;
+
+            icsContent += "BEGIN:VEVENT\n";
+            icsContent += `SUMMARY:${summary}\n`;
+            icsContent += `DTSTART:${dtStart}\n`;
+            icsContent += `DTEND:${dtEnd}\n`;
+            icsContent += `DESCRIPTION:Shift Code: ${event.code} Location: ${locationName}\n`;
+            if (locationName) icsContent += `LOCATION:${locationName}\n`;
+            icsContent += "END:VEVENT\n";
+        });
+
+        icsContent += "END:VCALENDAR";
+
+        // Trigger Download
+        const blob = new Blob([icsContent], { type: 'text/calendar' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Turni_${userName.replace(' ', '_')}.ics`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        log(`Success! Downloaded calendar for ${userName}`, "success");
+    }
+</script>
+
 </body>
 </html>
